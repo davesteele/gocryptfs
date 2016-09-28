@@ -1,0 +1,5 @@
+version=3
+
+https://github.com/rfjakob/gocryptfs/releases \
+/rfjakob/gocryptfs/archive/v([0-9\.]+)\.tar\.gz
+
