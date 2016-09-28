@@ -7,6 +7,15 @@ VER = $(shell (dpkg-parsechangelog -l$(PKD)/changelog | grep Version | sed 's/Ve
 %:
 	dh $@ --buildsystem=golang --with=golang
 
+override_dh_auto_build:
+	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/matrix
+	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/normal
+	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/plaintextnames
+	dh_auto_build
+	cp -r internal/configfile/config_test obj-*/src/github.com/rfjakob/gocryptfs/internal/configfile
+
+override_dh_auto_test:
+
 
 get-orig-source:  $(info I: $(PKG)_$(VER))
 	@echo "# Downloading..."
