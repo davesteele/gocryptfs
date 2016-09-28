@@ -7,12 +7,16 @@ VER = $(shell (dpkg-parsechangelog -l$(PKD)/changelog | grep Version | sed 's/Ve
 %:
 	dh $@ --buildsystem=golang --with=golang
 
+CHDATE = $(shell grep "\-\-" debian/changelog | head -1 | sed 's/.\+, //' | sed 's/...\:.\+//' )
+DT = $(shell date -d "${CHDATE}" "+%Y-%m-%d")
+
 override_dh_auto_build:
 	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/matrix
 	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/normal
 	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/plaintextnames
 	dh_auto_build
 	cp -r internal/configfile/config_test obj-*/src/github.com/rfjakob/gocryptfs/internal/configfile
+	ronn --date=${DT} debian/*.ronn
 
 override_dh_auto_test:
 

@@ -1,0 +1,107 @@
+gocryptfs(1) -- Encrypted overlay filesystem written in Go
+=============================================
+
+## SYNOPSIS
+
+`gocryptfs` -init|-passwd [<options>] <basedir>
+
+`gocryptfs` [<options>] <basedir> <mountpoint>
+
+
+  * `basedir`:
+    The directory containing the encrypted data.
+
+  * `mountpoint`:
+    The directory containing the unencrypted files.
+    
+
+## DESCRIPTION
+
+The **gocryptfs** utility mounts a user directory that is backed by an encrypted store.
+
+It can be used to implement an encrypted work area on the cloud, by pointing the
+basedir to a cloud-replicated directory.
+
+GoCryptFS uses [FUSE][FUSE] for the file mount. Use `fusermount -u <mountpoint>`
+to unmount the encrypted volume.
+
+
+## OPTIONS
+
+  * `-h`, `--help`:
+    Show a help message.
+
+  * `-allow_other`:
+    Allow other users to access the filesystem. Only works if user_allow_other is set in /etc/fuse.conf.
+
+  * `-config string`:
+    Use specified config file instead of CIPHERDIR/gocryptfs.conf
+
+  * `-cpuprofile string`:
+    Write cpu profile to specified file
+
+  * `-d`, `-debug`:
+    Enable debug output
+
+  * `-extpass string`:
+    Use external program for the password prompt
+
+  * `-f`:
+    Stay in the foreground
+
+  * `-fusedebug`:
+    Enable fuse library debug output
+
+  * `-init`:
+    Initialize encrypted directory
+
+  * `-longnames`:
+    Store names longer than 176 bytes in extra files (default true)
+
+  * `-masterkey string`:
+    Mount with explicit master key
+
+  * `-memprofile string`:
+    Write memory profile to specified file
+
+  * `-nosyslog`:
+    Do not redirect output to syslog when running in the background
+
+  * `-notifypid int`:
+    Send USR1 to the specified process after successful mount - used internally for daemonization
+
+  * `-o string`:
+    Pass additional mount options to the kernel, comma-separated list
+
+  * `-openssl string`:
+    Use OpenSSL instead of built-in Go crypto (default "auto")
+
+  * `-passwd`:
+    Change password
+
+  * `-plaintextnames`:
+    Do not encrypt file names
+
+  * `-q`, `-quiet`:
+    Quiet - silence informational messages
+
+  * `-ro`:
+    Mount the filesystem read-only
+
+  * `-scryptn int`:
+    scrypt cost parameter logN. Setting this to a lower value speeds up mounting but makes the password susceptible to brute-force attacks (default 16)
+
+  * `-version`:
+    Print version and exit
+
+  * `-wpanic`:
+    When encountering a warning, panic and exit immediately
+
+  * `-zerokey`:
+    Use all-zero dummy master key
+
+
+## SEE ALSO
+
+fusermount(1)
+
