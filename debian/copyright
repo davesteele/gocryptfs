@@ -1,0 +1,15 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: gocryptfs
+Source: https://github.com/rfjakob/gocryptfs
+
+Files: *
+Copyright: 2015 
+License: TODO
+
+Files: debian/*
+Copyright: 2016 root <root@desktop.localhost>
+License: TODO
+Comment: Debian packaging is licensed under the same terms as upstream
+
+License: TODO
+TODO
