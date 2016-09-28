@@ -2,4 +2,4 @@ gocryptfs (1.0-1) UNRELEASED; urgency=low
 
   * Initial release (Closes: TODO)
 
- -- root <root@desktop.localhost>  Tue, 27 Sep 2016 20:07:48 -0400
+ -- David Steele <steele@debian.org>  Tue, 27 Sep 2016 20:07:48 -0400
