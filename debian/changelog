@@ -1,5 +1,5 @@
-gocryptfs (1.0-1) UNRELEASED; urgency=low
+gocryptfs (1.0-1) unstable; urgency=low
 
-  * Initial release (Closes: TODO)
+  * Initial release (Closes: 839279)
 
  -- David Steele <steele@debian.org>  Tue, 27 Sep 2016 20:07:48 -0400
