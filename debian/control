@@ -20,7 +20,9 @@ XS-Go-Import-Path: github.com/rfjakob/gocryptfs
 Package: gocryptfs
 Architecture: any
 Built-Using: ${misc:Built-Using}
-Depends: ${shlibs:Depends},
+Depends: golang-github-jacobsa-crypto-dev,
+         golang-github-rfjakob-eme-dev,
+         ${shlibs:Depends},
          ${misc:Depends}
 Description: Encrypted overlay filesystem written in Go.
  gocryptfs is built on top the excellent go-fuse
