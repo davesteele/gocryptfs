@@ -1,4 +1,11 @@
-gocryptfs (1.0-1) unstable; urgency=low
+gocryptfs (1.0-2) unstable; urgency=medium
+
+  * Fix dependencies for new packages.
+  * Initial release (Closes: 839279)
+
+ -- David Steele <steele@debian.org>  Mon, 10 Oct 2016 19:39:56 -0400
+
+gocryptfs (1.0-1) UNRELEASED; urgency=low
 
   * Initial release (Closes: 839279)
 
