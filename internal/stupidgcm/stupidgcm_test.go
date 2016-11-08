@@ -14,6 +14,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"testing"
+
+	// For benchmark comparison
+	"github.com/rfjakob/gocryptfs/internal/siv_aead"
 )
 
 // Get "n" random bytes from /dev/urandom or panic
@@ -52,7 +55,7 @@ func TestEncryptDecrypt(t *testing.T) {
 		gOut := gGCM.Seal(dst, iv, in, authData)
 
 		// Ciphertext must be identical to Go GCM
-		if bytes.Compare(sOut, gOut) != 0 {
+		if !bytes.Equal(sOut, gOut) {
 			t.Fatalf("Compare failed for encryption, size %d", i)
 			t.Log("sOut:")
 			t.Log("\n" + hex.Dump(sOut))
@@ -70,7 +73,7 @@ func TestEncryptDecrypt(t *testing.T) {
 		}
 
 		// Plaintext must be identical to Go GCM
-		if bytes.Compare(sOut2, gOut2) != 0 {
+		if !bytes.Equal(sOut2, gOut2) {
 			t.Fatalf("Compare failed for decryption, size %d", i)
 		}
 	}
@@ -90,7 +93,7 @@ func TestCorruption(t *testing.T) {
 	if sErr != nil {
 		t.Fatal(sErr)
 	}
-	if bytes.Compare(in, sOut2) != 0 {
+	if !bytes.Equal(in, sOut2) {
 		t.Fatalf("Compare failed")
 	}
 
@@ -154,6 +157,19 @@ func Benchmark4kEncGoGCM(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	for i := 0; i < b.N; i++ {
+		// Encrypt and append to nonce
+		gGCM.Seal(iv, iv, in, authData)
+	}
+}
+
+func Benchmark4kEncAESSIV(b *testing.B) {
+	key := randBytes(32)
+	authData := randBytes(24)
+	iv := randBytes(16)
+	in := make([]byte, 4096)
+	b.SetBytes(int64(len(in)))
+	gGCM := siv_aead.New(key)
 	for i := 0; i < b.N; i++ {
 		// Encrypt and append to nonce
 		gGCM.Seal(iv, iv, in, authData)

@@ -14,35 +14,42 @@ import (
 import "os"
 
 const (
+	// ConfDefaultName is the default configuration file name.
 	// The dot "." is not used in base64url (RFC4648), hence
 	// we can never clash with an encrypted file.
 	ConfDefaultName = "gocryptfs.conf"
+	// ConfReverseName is the default configuration file name in reverse mode,
+	// the config file gets stored next to the plain-text files. Make it hidden
+	// (start with dot) to not annoy the user.
+	ConfReverseName = ".gocryptfs.reverse.conf"
 )
 
+// ConfFile is the content of a config file.
 type ConfFile struct {
-	// gocryptfs version string
+	// Creator is the gocryptfs version string.
 	// This only documents the config file for humans who look at it. The actual
 	// technical info is contained in FeatureFlags.
 	Creator string
-	// Encrypted AES key, unlocked using a password hashed with scrypt
+	// EncryptedKey holds an encrypted AES key, unlocked using a password
+	// hashed with scrypt
 	EncryptedKey []byte
-	// Stores parameters for scrypt hashing (key derivation)
-	ScryptObject scryptKdf
-	// The On-Disk-Format version this filesystem uses
+	// ScryptObject stores parameters for scrypt hashing (key derivation)
+	ScryptObject ScryptKDF
+	// Version is the On-Disk-Format version this filesystem uses
 	Version uint16
-	// List of feature flags this filesystem has enabled.
+	// FeatureFlags is a list of feature flags this filesystem has enabled.
 	// If gocryptfs encounters a feature flag it does not support, it will refuse
 	// mounting. This mechanism is analogous to the ext4 feature flags that are
 	// stored in the superblock.
 	FeatureFlags []string
-	// File the config is saved to. Not exported to JSON.
+	// Filename is the name of the config file. Not exported to JSON.
 	filename string
 }
 
 // CreateConfFile - create a new config with a random key encrypted with
 // "password" and write it to "filename".
 // Uses scrypt with cost parameter logN.
-func CreateConfFile(filename string, password string, plaintextNames bool, logN int, creator string) error {
+func CreateConfFile(filename string, password string, plaintextNames bool, logN int, creator string, aessiv bool) error {
 	var cf ConfFile
 	cf.filename = filename
 	cf.Creator = creator
@@ -63,6 +70,9 @@ func CreateConfFile(filename string, password string, plaintextNames bool, logN 
 		cf.FeatureFlags = append(cf.FeatureFlags, knownFlags[FlagDirIV])
 		cf.FeatureFlags = append(cf.FeatureFlags, knownFlags[FlagEMENames])
 		cf.FeatureFlags = append(cf.FeatureFlags, knownFlags[FlagLongNames])
+	}
+	if aessiv {
+		cf.FeatureFlags = append(cf.FeatureFlags, knownFlags[FlagAESSIV])
 	}
 
 	// Write file to disk
@@ -129,14 +139,18 @@ func LoadConfFile(filename string, password string) ([]byte, *ConfFile, error) {
 
 		return nil, nil, fmt.Errorf("Deprecated filesystem")
 	}
-
+	if password == "" {
+		// We have validated the config file, but without a password we cannot
+		// decrypt the master key. Return only the parsed config.
+		return nil, &cf, nil
+	}
 	// Generate derived key from password
 	scryptHash := cf.ScryptObject.DeriveKey(password)
 
 	// Unlock master key using password-based key
 	// We use stock go GCM instead of OpenSSL here as we only use 96-bit IVs,
 	// speed is not important and we get better error messages
-	cc := cryptocore.New(scryptHash, false, false)
+	cc := cryptocore.New(scryptHash, cryptocore.BackendGoGCM, 96)
 	ce := contentenc.New(cc, 4096)
 
 	tlog.Warn.Enabled = false // Silence DecryptBlock() error messages on incorrect password
@@ -156,11 +170,11 @@ func LoadConfFile(filename string, password string) ([]byte, *ConfFile, error) {
 // cf.ScryptObject.
 func (cf *ConfFile) EncryptKey(key []byte, password string, logN int) {
 	// Generate derived key from password
-	cf.ScryptObject = NewScryptKdf(logN)
+	cf.ScryptObject = NewScryptKDF(logN)
 	scryptHash := cf.ScryptObject.DeriveKey(password)
 
 	// Lock master key using password-based key
-	cc := cryptocore.New(scryptHash, false, false)
+	cc := cryptocore.New(scryptHash, cryptocore.BackendGoGCM, 96)
 	ce := contentenc.New(cc, 4096)
 	cf.EncryptedKey = ce.EncryptBlock(key, 0, nil)
 }
@@ -179,6 +193,8 @@ func (cf *ConfFile) WriteFile() error {
 	if err != nil {
 		return err
 	}
+	// For convenience for the user, add a newline at the end.
+	js = append(js, '\n')
 	_, err = fd.Write(js)
 	if err != nil {
 		return err
@@ -192,9 +208,5 @@ func (cf *ConfFile) WriteFile() error {
 		return err
 	}
 	err = os.Rename(tmp, cf.filename)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }

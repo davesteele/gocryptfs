@@ -12,6 +12,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/rfjakob/gocryptfs/internal/cryptocore"
 	"github.com/rfjakob/gocryptfs/tests/test_helpers"
 )
 
@@ -22,11 +23,16 @@ var opensslOpt string
 func TestMain(m *testing.M) {
 	// Make "testing.Verbose()" return the correct value
 	flag.Parse()
-	for _, opensslOpt = range []string{"-openssl=false", "-openssl=true"} {
+	variants := []string{"-openssl=true", "-openssl=false"}
+	if !cryptocore.HaveModernGoGCM {
+		fmt.Printf("Skipping Go GCM variant, Go installation is too old")
+		variants = variants[:1]
+	}
+	for _, opensslOpt = range variants {
 		if testing.Verbose() {
 			fmt.Printf("example_filesystems: testing with %q\n", opensslOpt)
 		}
-		test_helpers.ResetTmpDir(true)
+		test_helpers.ResetTmpDir(false)
 		r := m.Run()
 		if r != 0 {
 			os.Exit(r)
@@ -131,4 +137,91 @@ func TestExampleFSv09(t *testing.T) {
 		opensslOpt)
 	checkExampleFSLongnames(t, pDir)
 	test_helpers.UnmountPanic(pDir)
+}
+
+// gocryptfs v1.1 introduced AES-SIV
+func TestExampleFSv11(t *testing.T) {
+	cDir := "v1.1-aessiv"
+	pDir := test_helpers.TmpDir + "/" + cDir
+	err := os.Mkdir(pDir, 0777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	test_helpers.MountOrFatal(t, cDir, pDir, "-extpass", "echo test", opensslOpt)
+	checkExampleFSLongnames(t, pDir)
+	test_helpers.UnmountPanic(pDir)
+	pDir = pDir + ".2"
+	test_helpers.MountOrFatal(t, cDir, pDir, "-masterkey",
+		"eaf371c3-f9a55336-8819f22b-7bccd7c2-a738cf61-7261c658-14c28a03-9428992b",
+		"-aessiv", opensslOpt)
+	checkExampleFSLongnames(t, pDir)
+	test_helpers.UnmountPanic(pDir)
+}
+
+// gocryptfs v1.1 introduced reverse mode
+func TestExampleFSv11reverse(t *testing.T) {
+	dirA := "v1.1-reverse"
+	dirB := test_helpers.TmpDir + "/" + dirA + ".B"
+	err := os.Mkdir(dirB, 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirC := test_helpers.TmpDir + "/" + dirA + ".C"
+	err = os.Mkdir(dirC, 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	test_helpers.MountOrFatal(t, dirA, dirB, "-reverse", "-extpass", "echo test", opensslOpt)
+	c := dirB + "/gocryptfs.conf"
+	if !test_helpers.VerifyExistence(c) {
+		t.Errorf("%s missing", c)
+	}
+	test_helpers.MountOrFatal(t, dirB, dirC, "-extpass", "echo test", opensslOpt)
+	checkExampleFSrw(t, dirC, false)
+	test_helpers.UnmountPanic(dirC)
+	test_helpers.UnmountPanic(dirB)
+
+	m := "68b51855-042abd80-635ae1ba-90152a78-2ec2d243-832ac72a-eab0561a-f2d37913"
+	test_helpers.MountOrFatal(t, dirA, dirB, "-reverse", "-masterkey", m, opensslOpt)
+	if !test_helpers.VerifyExistence(c) {
+		t.Errorf("%s missing", c)
+	}
+	test_helpers.MountOrFatal(t, dirB, dirC, "-aessiv", "-masterkey", m, opensslOpt)
+	checkExampleFSrw(t, dirC, false)
+	test_helpers.UnmountPanic(dirC)
+	test_helpers.UnmountPanic(dirB)
+}
+
+// gocryptfs v1.1 introduced reverse mode
+func TestExampleFSv11reversePlaintextnames(t *testing.T) {
+	dirA := "v1.1-reverse-plaintextnames"
+	dirB := test_helpers.TmpDir + "/" + dirA + ".B"
+	err := os.Mkdir(dirB, 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirC := test_helpers.TmpDir + "/" + dirA + ".C"
+	err = os.Mkdir(dirC, 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	test_helpers.MountOrFatal(t, dirA, dirB, "-reverse", "-extpass", "echo test", opensslOpt)
+	c := dirB + "/gocryptfs.conf"
+	if !test_helpers.VerifyExistence(c) {
+		t.Errorf("%s missing", c)
+	}
+	test_helpers.MountOrFatal(t, dirB, dirC, "-extpass", "echo test", opensslOpt)
+	checkExampleFSrw(t, dirC, false)
+	test_helpers.UnmountPanic(dirC)
+	test_helpers.UnmountPanic(dirB)
+
+	m := "e7fb8f0d-2a81df9e-26611e4b-5540b218-e48aa458-c2a623af-d0c82637-1466b5f2"
+	test_helpers.MountOrFatal(t, dirA, dirB, "-reverse", "-masterkey", m, opensslOpt)
+	if !test_helpers.VerifyExistence(c) {
+		t.Errorf("%s missing", c)
+	}
+	test_helpers.MountOrFatal(t, dirB, dirC, "-aessiv", "-masterkey", m, opensslOpt)
+	checkExampleFSrw(t, dirC, false)
+	test_helpers.UnmountPanic(dirC)
+	test_helpers.UnmountPanic(dirB)
 }

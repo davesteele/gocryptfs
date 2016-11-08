@@ -12,21 +12,34 @@ import (
 )
 
 const (
+	// ProgramName is used in log reports.
 	ProgramName = "gocryptfs"
 	wpanicMsg   = "-wpanic turns this warning into a panic: "
 )
 
 // Escape sequences for terminal colors. These will be empty strings if stdout
 // is not a terminal.
-var ColorReset, ColorGrey, ColorRed, ColorGreen, ColorYellow string
+var (
+	// ColorReset is used to reset terminal colors.
+	ColorReset string
+	// ColorGrey is a terminal color setting string.
+	ColorGrey string
+	// ColorRed is a terminal color setting string.
+	ColorRed string
+	// ColorGreen is a terminal color setting string.
+	ColorGreen string
+	// ColorYellow is a terminal color setting string.
+	ColorYellow string
+)
 
+// JSONDump writes the object in json form.
 func JSONDump(obj interface{}) string {
 	b, err := json.MarshalIndent(obj, "", "\t")
 	if err != nil {
 		return err.Error()
-	} else {
-		return string(b)
 	}
+
+	return string(b)
 }
 
 // toggledLogger - a Logger than can be enabled and disabled
@@ -61,15 +74,16 @@ func (l *toggledLogger) Println(v ...interface{}) {
 	}
 }
 
-// Debug messages
+// Debug logs debug messages
 // Can be enabled by passing "-d"
 var Debug *toggledLogger
 
-// Informational message
+// Info logs informational message
 // Can be disabled by passing "-q"
 var Info *toggledLogger
 
-// A warning, meaning nothing serious by itself but might indicate problems.
+// Warn logs warnings,
+// meaning nothing serious by itself but might indicate problems.
 // Passing "-wpanic" will make this function panic after printing the message.
 var Warn *toggledLogger
 

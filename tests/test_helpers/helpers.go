@@ -15,13 +15,20 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/nametransform"
 )
 
+// TmpDir will be created inside this directory
 const testParentDir = "/tmp/gocryptfs-test-parent"
+
+// GocryptfsBinary is the assumed path to the gocryptfs build.
 const GocryptfsBinary = "../../gocryptfs"
 
-// "go test" runs package tests in parallel! We must create a unique TmpDir on
-// startup or the tests will interfere horribly
+// TmpDir is a unique temporary directory. "go test" runs package tests in parallel. We create a
+// unique TmpDir in init() so the tests do not interfere.
 var TmpDir string
+
+// DefaultPlainDir is TmpDir + "/default-plain"
 var DefaultPlainDir string
+
+// DefaultCipherDir is TmpDir + "/default-cipher"
 var DefaultCipherDir string
 
 func init() {
@@ -35,13 +42,13 @@ func init() {
 	DefaultCipherDir = TmpDir + "/default-cipher"
 }
 
-// ResetTmpDir - delete TmpDir, create new dir tree:
+// ResetTmpDir deletes TmpDir, create new dir tree:
 //
 // TmpDir
 // |-- DefaultPlainDir
 // *-- DefaultCipherDir
 //     *-- gocryptfs.diriv
-func ResetTmpDir(plaintextNames bool) {
+func ResetTmpDir(createDirIV bool) {
 	// Try to unmount and delete everything
 	entries, err := ioutil.ReadDir(TmpDir)
 	if err == nil {
@@ -49,10 +56,18 @@ func ResetTmpDir(plaintextNames bool) {
 			d := filepath.Join(TmpDir, e.Name())
 			err = os.Remove(d)
 			if err != nil {
-				if testing.Verbose() {
-					fmt.Printf("%v, trying umount\n", d, err)
+				pe := err.(*os.PathError)
+				if pe.Err == syscall.EBUSY {
+					if testing.Verbose() {
+						fmt.Printf("Remove failed: %v. Maybe still mounted?\n", pe)
+					}
+					err = UnmountErr(d)
+					if err != nil {
+						panic(err)
+					}
+				} else if pe.Err != syscall.ENOTEMPTY {
+					panic("Unhandled error: " + pe.Err.Error())
 				}
-				UnmountErr(d)
 				err = os.RemoveAll(d)
 				if err != nil {
 					panic(err)
@@ -68,7 +83,7 @@ func ResetTmpDir(plaintextNames bool) {
 	if err != nil {
 		panic(err)
 	}
-	if !plaintextNames {
+	if createDirIV {
 		err = nametransform.WriteDirIV(DefaultCipherDir)
 		if err != nil {
 			panic(err)
@@ -77,7 +92,7 @@ func ResetTmpDir(plaintextNames bool) {
 }
 
 // InitFS calls "gocryptfs -init" on a new directory in TmpDir, passing
-// "extraArgs" in addition to practical defaults.
+// "extraArgs" in addition to useful defaults.
 //
 // The returned cipherdir has NO trailing slash.
 func InitFS(t *testing.T, extraArgs ...string) string {
@@ -106,7 +121,7 @@ func InitFS(t *testing.T, extraArgs ...string) string {
 func Mount(c string, p string, showOutput bool, extraArgs ...string) error {
 	var args []string
 	args = append(args, extraArgs...)
-	args = append(args, "-q", "-wpanic")
+	args = append(args, "-q", "-wpanic", "-nosyslog")
 	//args = append(args, "-fusedebug")
 	//args = append(args, "-d")
 	args = append(args, c)
@@ -128,7 +143,7 @@ func Mount(c string, p string, showOutput bool, extraArgs ...string) error {
 	return cmd.Run()
 }
 
-// MountOrExit calls mount() and exits on failure.
+// MountOrExit calls Mount() and exits on failure.
 func MountOrExit(c string, p string, extraArgs ...string) {
 	err := Mount(c, p, true, extraArgs...)
 	if err != nil {
@@ -137,7 +152,7 @@ func MountOrExit(c string, p string, extraArgs ...string) {
 	}
 }
 
-// MountOrFatal calls mount() and calls t.Fatal() on failure.
+// MountOrFatal calls Mount() and calls t.Fatal() on failure.
 func MountOrFatal(t *testing.T, c string, p string, extraArgs ...string) {
 	err := Mount(c, p, true, extraArgs...)
 	if err != nil {
@@ -154,7 +169,7 @@ func UnmountPanic(dir string) {
 	}
 }
 
-// UnmountError tries to unmount "dir" and returns the resulting error.
+// UnmountErr tries to unmount "dir" and returns the resulting error.
 func UnmountErr(dir string) error {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "darwin" {
@@ -167,7 +182,7 @@ func UnmountErr(dir string) error {
 	return cmd.Run()
 }
 
-// Return md5 string for file "filename"
+// Md5fn returns an md5 string for file "filename"
 func Md5fn(filename string) string {
 	buf, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -177,14 +192,14 @@ func Md5fn(filename string) string {
 	return Md5hex(buf)
 }
 
-// Return md5 string for "buf"
+// Md5hex returns an md5 string for "buf"
 func Md5hex(buf []byte) string {
 	rawHash := md5.Sum(buf)
 	hash := hex.EncodeToString(rawHash[:])
 	return hash
 }
 
-// Verify that the file size equals "want". This checks:
+// VerifySize checks that the file size equals "want". This checks:
 // 1) Size reported by Stat()
 // 2) Number of bytes returned when reading the whole file
 func VerifySize(t *testing.T, path string, want int) {
@@ -203,7 +218,7 @@ func VerifySize(t *testing.T, path string, want int) {
 	}
 }
 
-// Create and delete a directory
+// TestMkdirRmdir creates and deletes a directory
 func TestMkdirRmdir(t *testing.T, plainDir string) {
 	dir := plainDir + "/dir1"
 	err := os.Mkdir(dir, 0777)
@@ -250,7 +265,7 @@ func TestMkdirRmdir(t *testing.T, plainDir string) {
 	}
 }
 
-// Create and rename a file
+// TestRename creates and renames a file
 func TestRename(t *testing.T, plainDir string) {
 	file1 := plainDir + "/rename1"
 	file2 := plainDir + "/rename2"
@@ -265,7 +280,7 @@ func TestRename(t *testing.T, plainDir string) {
 	syscall.Unlink(file2)
 }
 
-// verifyExistence - check in 3 ways that "path" exists:
+// VerifyExistence checks in 3 ways that "path" exists:
 // stat, open, readdir
 func VerifyExistence(path string) bool {
 	// Check that file can be stated
@@ -299,12 +314,12 @@ func VerifyExistence(path string) bool {
 
 // Du returns the disk usage of the file "fd" points to, in bytes.
 // Same as "du --block-size=1".
-func Du(t *testing.T, fd int) (nBytes int64, nBlocks int64) {
+func Du(t *testing.T, fd int) (nBytes int64) {
 	var st syscall.Stat_t
 	err := syscall.Fstat(fd, &st)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// On OSX, Blksize is int32, need to cast to int64.
-	return st.Blocks * int64(st.Blksize), st.Blocks
+	// st.Blocks = number of 512-byte blocks
+	return st.Blocks * 512
 }

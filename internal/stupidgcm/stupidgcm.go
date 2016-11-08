@@ -1,3 +1,5 @@
+// +build !without_openssl
+
 // Package stupidgcm is a thin wrapper for OpenSSL's GCM encryption and
 // decryption functions. It only support 32-byte keys and 16-bit IVs.
 package stupidgcm
@@ -7,12 +9,16 @@ package stupidgcm
 import "C"
 
 import (
+	"crypto/cipher"
 	"fmt"
 	"log"
 	"unsafe"
 )
 
 const (
+	// BuiltWithoutOpenssl indicates if openssl been disabled at compile-time
+	BuiltWithoutOpenssl = false
+
 	keyLen = 32
 	ivLen  = 16
 	tagLen = 16
@@ -23,7 +29,10 @@ type stupidGCM struct {
 	key []byte
 }
 
-func New(key []byte) stupidGCM {
+var _ cipher.AEAD = &stupidGCM{}
+
+// New returns a new cipher.AEAD implementation..
+func New(key []byte) cipher.AEAD {
 	if len(key) != keyLen {
 		log.Panicf("Only %d-byte keys are supported", keyLen)
 	}
@@ -38,7 +47,7 @@ func (g stupidGCM) Overhead() int {
 	return tagLen
 }
 
-// Seal - encrypt "in" using "iv" and "authData" and append the result to "dst"
+// Seal encrypts "in" using "iv" and "authData" and append the result to "dst"
 func (g stupidGCM) Seal(dst, iv, in, authData []byte) []byte {
 	if len(iv) != ivLen {
 		log.Panicf("Only %d-byte IVs are supported", ivLen)
@@ -109,7 +118,7 @@ func (g stupidGCM) Seal(dst, iv, in, authData []byte) []byte {
 	return append(dst, buf...)
 }
 
-// Open - decrypt "in" using "iv" and "authData" and append the result to "dst"
+// Open decrypts "in" using "iv" and "authData" and append the result to "dst"
 func (g stupidGCM) Open(dst, iv, in, authData []byte) ([]byte, error) {
 	if len(iv) != ivLen {
 		log.Panicf("Only %d-byte IVs are supported", ivLen)

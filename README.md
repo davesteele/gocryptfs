@@ -1,5 +1,8 @@
-[![gocryptfs](https://nuetzlich.net/gocryptfs/img/gocryptfs-logo.paths-black.svg)](https://nuetzlich.net/gocryptfs/) [![Build Status](https://travis-ci.org/rfjakob/gocryptfs.svg?branch=master)](https://travis-ci.org/rfjakob/gocryptfs) ![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)
-==============
+[![gocryptfs](https://nuetzlich.net/gocryptfs/img/gocryptfs-logo.paths-black.svg)](https://nuetzlich.net/gocryptfs/)
+[![Build Status](https://travis-ci.org/rfjakob/gocryptfs.svg?branch=master)](https://travis-ci.org/rfjakob/gocryptfs)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rfjakob/gocryptfs)](https://goreportcard.com/report/github.com/rfjakob/gocryptfs)
+
 An encrypted overlay filesystem written in Go.
 Official website: https://nuetzlich.net/gocryptfs
 
@@ -81,7 +84,7 @@ Storage Overhead
 
 * Empty files take 0 bytes on disk
 * 18 byte file header for non-empty files (2 bytes version, 16 bytes random file id)
-* 28 bytes of storage overhead per 4kB block (12 byte nonce, 16 bytes auth tag)
+* 32 bytes of storage overhead per 4kB block (16 byte nonce, 16 bytes auth tag)
 
 [file-format.md](Documentation/file-format.md) contains a more detailed description.
 
@@ -114,6 +117,39 @@ RM:    4.42
 
 Changelog
 ---------
+
+v1.1.1, 2016-10-30
+* Fix a panic on setting file timestamps ([go-fuse#131](https://github.com/hanwen/go-fuse/pull/131))
+* Work around an issue in tmpfs that caused a panic in xfstests generic/075
+  ([gocryptfs#56](https://github.com/rfjakob/gocryptfs/issues/56))
+* Optimize NFS streaming writes
+  ([commit](https://github.com/rfjakob/gocryptfs/commit/a08d55f42d5b11e265a8617bee16babceebfd026))
+
+v1.1, 2016-10-19
+* **Add reverse mode ([#19](https://github.com/rfjakob/gocryptfs/issues/19))**
+ * AES-SIV (RFC5297) encryption to implement deterministic encryption
+   securely. Uses the excellent
+   [jacobsa/crypto](https://github.com/jacobsa/crypto) library.
+   The corresponding feature flag is called `AESSIV`.
+ * New command-line options: `-reverse`, `-aessiv`
+ * Filesystems using reverse mode can only be mounted with gocryptfs v1.1
+   and later.
+ * The default, forward mode, stays fully compatible with older versions.
+   Forward mode will keep using GCM because it is much faster.
+* Accept `-o foo,bar,baz`-style options that are passed at the end of
+  the command-line, like mount(1) does. All other options must still
+  precede the passed paths.
+ * This allows **mounting from /etc/fstab**. See
+   [#45](https://github.com/rfjakob/gocryptfs/issues/45) for details.
+ * **Mounting on login using pam_mount** works as well. It is
+   [described in the wiki](https://github.com/rfjakob/gocryptfs/wiki/Mounting-on-login-using-pam_mount).
+* To prevent confusion, the old `-o` option had to be renamed. It is now
+  called `-ko`. Arguments to `-ko` are passed directly to the kernel.
+* New `-passfile` command-line option. Provides an easier way to read
+  the password from a file. Internally, this is equivalent to
+  `-extpass "/bin/cat FILE"`.
+* Enable changing the password when you only know the master key
+  ([#28](https://github.com/rfjakob/gocryptfs/issues/28))
 
 v1.0, 2016-07-17
 * Deprecate very old filesystems, stage 3/3

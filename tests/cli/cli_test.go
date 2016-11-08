@@ -1,0 +1,274 @@
+package cli
+
+// Test CLI operations like "-init", "-password" etc
+
+import (
+	"io/ioutil"
+	"os"
+	"os/exec"
+	"syscall"
+	"testing"
+
+	"github.com/rfjakob/gocryptfs/internal/configfile"
+
+	"github.com/rfjakob/gocryptfs/tests/test_helpers"
+)
+
+func TestMain(m *testing.M) {
+	test_helpers.ResetTmpDir(false)
+	r := m.Run()
+	os.Exit(r)
+}
+
+// Test -init flag
+func TestInit(t *testing.T) {
+	dir := test_helpers.InitFS(t)
+	_, c, err := configfile.LoadConfFile(dir+"/"+configfile.ConfDefaultName, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.IsFeatureFlagSet(configfile.FlagAESSIV) {
+		t.Error("AESSIV flag should not be set")
+	}
+}
+
+// Test -init with -aessiv
+func TestInitAessiv(t *testing.T) {
+	dir := test_helpers.InitFS(t, "-aessiv")
+	_, c, err := configfile.LoadConfFile(dir+"/"+configfile.ConfDefaultName, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.IsFeatureFlagSet(configfile.FlagAESSIV) {
+		t.Error("AESSIV flag should be set but is not")
+	}
+}
+
+// Test -init with -reverse
+func TestInitReverse(t *testing.T) {
+	dir := test_helpers.InitFS(t, "-reverse")
+	_, c, err := configfile.LoadConfFile(dir+"/"+configfile.ConfReverseName, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.IsFeatureFlagSet(configfile.FlagAESSIV) {
+		t.Error("AESSIV flag should be set but is not")
+	}
+}
+
+func testPasswd(t *testing.T, dir string, extraArgs ...string) {
+	// Change password using "-extpass"
+	args := []string{"-q", "-passwd", "-extpass", "echo test"}
+	args = append(args, extraArgs...)
+	args = append(args, dir)
+	cmd := exec.Command(test_helpers.GocryptfsBinary, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if err != nil {
+		t.Error(err)
+	}
+	// Change password using stdin
+	args = []string{"-q", "-passwd"}
+	args = append(args, extraArgs...)
+	args = append(args, dir)
+	cmd = exec.Command(test_helpers.GocryptfsBinary, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	p, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Start()
+	if err != nil {
+		t.Error(err)
+	}
+	// Old password
+	p.Write([]byte("test\n"))
+	// New password
+	p.Write([]byte("newpasswd\n"))
+	p.Close()
+	err = cmd.Wait()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+// Test -passwd flag
+func TestPasswd(t *testing.T) {
+	// Create FS
+	dir := test_helpers.InitFS(t)
+	mnt := dir + ".mnt"
+	// Add content
+	test_helpers.MountOrFatal(t, dir, mnt, "-extpass", "echo test")
+	file1 := mnt + "/file1"
+	err := ioutil.WriteFile(file1, []byte("somecontent"), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = test_helpers.UnmountErr(mnt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Change password to "newpasswd"
+	testPasswd(t, dir)
+	// Mount and verify
+	test_helpers.MountOrFatal(t, dir, mnt, "-extpass", "echo newpasswd")
+	content, err := ioutil.ReadFile(file1)
+	if err != nil {
+		t.Error(err)
+	} else if string(content) != "somecontent" {
+		t.Errorf("wrong content: %q", string(content))
+	}
+	err = test_helpers.UnmountErr(mnt)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Test -passwd with -masterkey
+func TestPasswdMasterkey(t *testing.T) {
+	// Create FS
+	dir := test_helpers.InitFS(t)
+	// Overwrite with config with known master key
+	conf, err := ioutil.ReadFile("gocryptfs.conf.b9e5ba23")
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscall.Unlink(dir + "/gocryptfs.conf")
+	err = ioutil.WriteFile(dir+"/gocryptfs.conf", conf, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Add content
+	mnt := dir + ".mnt"
+	test_helpers.MountOrFatal(t, dir, mnt, "-extpass", "echo test")
+	file1 := mnt + "/file1"
+	err = ioutil.WriteFile(file1, []byte("somecontent"), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	test_helpers.UnmountPanic(mnt)
+	// Change password using stdin
+	args := []string{"-q", "-passwd", "-masterkey",
+		"b9e5ba23-981a22b8-c8d790d8-627add29-f680513f-b7b7035f-d203fb83-21d82205"}
+	args = append(args, dir)
+	cmd := exec.Command(test_helpers.GocryptfsBinary, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	p, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Start()
+	if err != nil {
+		t.Error(err)
+	}
+	// New password
+	p.Write([]byte("newpasswd\n"))
+	p.Close()
+	err = cmd.Wait()
+	if err != nil {
+		t.Error(err)
+	}
+	// Mount and verify
+	test_helpers.MountOrFatal(t, dir, mnt, "-extpass", "echo newpasswd")
+	content, err := ioutil.ReadFile(file1)
+	if err != nil {
+		t.Error(err)
+	} else if string(content) != "somecontent" {
+		t.Errorf("wrong content: %q", string(content))
+	}
+	test_helpers.UnmountPanic(mnt)
+}
+
+// Test -passwd with -reverse
+func TestPasswdReverse(t *testing.T) {
+	// Create FS
+	dir := test_helpers.InitFS(t, "-reverse")
+	testPasswd(t, dir, "-reverse")
+}
+
+// Test -init & -config flag
+func TestInitConfig(t *testing.T) {
+	config := test_helpers.TmpDir + "/TestInitConfig.conf"
+	dir := test_helpers.InitFS(t, "-config="+config)
+
+	_, err := os.Stat(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Test -passwd & -config
+	cmd2 := exec.Command(test_helpers.GocryptfsBinary, "-q", "-passwd", "-extpass", "echo test",
+		"-config", config, dir)
+	cmd2.Stdout = os.Stdout
+	cmd2.Stderr = os.Stderr
+	err = cmd2.Run()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+// Test -ro
+func TestRo(t *testing.T) {
+	dir := test_helpers.InitFS(t)
+	mnt := dir + ".mnt"
+	test_helpers.MountOrFatal(t, dir, mnt, "-ro", "-extpass=echo test")
+	defer test_helpers.UnmountPanic(mnt)
+
+	file := mnt + "/file"
+	err := os.Mkdir(file, 0777)
+	if err == nil {
+		t.Errorf("Mkdir should have failed")
+	}
+	_, err = os.Create(file)
+	if err == nil {
+		t.Errorf("Create should have failed")
+	}
+}
+
+// Test "-nonempty"
+func TestNonempty(t *testing.T) {
+	dir := test_helpers.InitFS(t)
+	mnt := dir + ".mnt"
+	err := os.Mkdir(mnt, 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ioutil.WriteFile(mnt+"/somefile", []byte("xyz"), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = test_helpers.Mount(dir, mnt, false, "-extpass=echo test")
+	if err == nil {
+		t.Errorf("Mounting over a file should fail per default")
+	}
+	// Should work with "-nonempty"
+	test_helpers.MountOrFatal(t, dir, mnt, "-nonempty", "-extpass=echo test")
+	test_helpers.UnmountPanic(mnt)
+}
+
+// Test "mountpoint shadows cipherdir" handling
+func TestShadows(t *testing.T) {
+	mnt := test_helpers.InitFS(t)
+	cipher := mnt + ".cipher"
+	err := os.Rename(mnt, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This should work
+	// (note that MountOrFatal creates "mnt" again)
+	test_helpers.MountOrFatal(t, cipher, mnt, "-extpass=echo test")
+	test_helpers.UnmountPanic(mnt)
+	cipher2 := mnt + "/cipher"
+	err = os.Rename(cipher, cipher2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This should fail
+	err = test_helpers.Mount(cipher2, mnt, false, "-extpass=echo test")
+	if err == nil {
+		t.Errorf("Should have failed")
+	}
+}

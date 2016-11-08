@@ -1,3 +1,4 @@
+// Tests run for (almost all) combinations of openssl, aessiv, plaintextnames.
 package matrix
 
 // File reading, writing, modification, truncate
@@ -12,42 +13,69 @@ package matrix
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"runtime"
 	"sync"
 	"syscall"
 	"testing"
 
+	"github.com/rfjakob/gocryptfs/internal/cryptocore"
 	"github.com/rfjakob/gocryptfs/internal/syscallcompat"
 	"github.com/rfjakob/gocryptfs/tests/test_helpers"
 )
 
 // Several tests need to be aware if plaintextnames is active or not, so make this
 // a global variable
-var plaintextnames bool
+var testcase testcaseMatrix
+
+type testcaseMatrix struct {
+	// Exported so we can dump the struct using json.Marshal
+	Plaintextnames bool
+	Openssl        string
+	Aessiv         bool
+}
+
+var matrix = []testcaseMatrix{
+	// Normal
+	{false, "auto", false},
+	{false, "true", false},
+	{false, "false", false},
+	// Plaintextnames
+	{true, "true", false},
+	{true, "false", false},
+	// AES-SIV (does not use openssl, no need to test permutations)
+	{false, "auto", true},
+	{true, "auto", true},
+}
 
 // This is the entry point for the tests
 func TestMain(m *testing.M) {
 	// Make "testing.Verbose()" return the correct value
 	flag.Parse()
-	for _, openssl := range []bool{true, false} {
-		for _, plaintextnames = range []bool{true, false} {
-			if testing.Verbose() {
-				fmt.Printf("matrix: testing openssl=%v plaintextnames=%v\n", openssl, plaintextnames)
-			}
-			test_helpers.ResetTmpDir(plaintextnames)
-			opts := []string{"--zerokey"}
-			opts = append(opts, fmt.Sprintf("-openssl=%v", openssl))
-			opts = append(opts, fmt.Sprintf("-plaintextnames=%v", plaintextnames))
-			test_helpers.MountOrExit(test_helpers.DefaultCipherDir, test_helpers.DefaultPlainDir, opts...)
-			r := m.Run()
-			test_helpers.UnmountPanic(test_helpers.DefaultPlainDir)
-			if r != 0 {
-				os.Exit(r)
-			}
+	for _, testcase = range matrix {
+		if !cryptocore.HaveModernGoGCM && testcase.Openssl != "true" {
+			fmt.Printf("Skipping Go GCM variant, Go installation is too old")
+			continue
+		}
+		if testing.Verbose() {
+			j, _ := json.Marshal(testcase)
+			fmt.Printf("matrix: testcase = %s\n", string(j))
+		}
+		test_helpers.ResetTmpDir(!testcase.Plaintextnames)
+		opts := []string{"-zerokey"}
+		opts = append(opts, fmt.Sprintf("-openssl=%v", testcase.Openssl))
+		opts = append(opts, fmt.Sprintf("-plaintextnames=%v", testcase.Plaintextnames))
+		opts = append(opts, fmt.Sprintf("-aessiv=%v", testcase.Aessiv))
+		test_helpers.MountOrExit(test_helpers.DefaultCipherDir, test_helpers.DefaultPlainDir, opts...)
+		r := m.Run()
+		test_helpers.UnmountPanic(test_helpers.DefaultPlainDir)
+		if r != 0 {
+			os.Exit(r)
 		}
 	}
 	os.Exit(0)
@@ -169,6 +197,27 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
+const (
+	// From man statfs
+	TMPFS_MAGIC      = 0x01021994
+	EXT4_SUPER_MAGIC = 0xef53
+)
+
+// isWellKnownFS decides if the backing filesystem is well-known.
+// The expected allocated sizes are only valid on tmpfs and ext4. btrfs
+// gives different results, but that's not an error.
+func isWellKnownFS(fn string) bool {
+	var fs syscall.Statfs_t
+	err := syscall.Statfs(fn, &fs)
+	if err != nil {
+		panic(err)
+	}
+	if fs.Type == EXT4_SUPER_MAGIC || fs.Type == TMPFS_MAGIC {
+		return true
+	}
+	return false
+}
+
 const FALLOC_DEFAULT = 0x00
 const FALLOC_FL_KEEP_SIZE = 0x01
 
@@ -176,17 +225,16 @@ func TestFallocate(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skipf("OSX does not support fallocate")
 	}
-
 	fn := test_helpers.DefaultPlainDir + "/fallocate"
 	file, err := os.Create(fn)
 	if err != nil {
 		t.FailNow()
 	}
-	var nBlocks int64
+	wellKnown := isWellKnownFS(test_helpers.DefaultCipherDir)
 	fd := int(file.Fd())
-	_, nBlocks = test_helpers.Du(t, fd)
-	if nBlocks != 0 {
-		t.Fatalf("Empty file has %d blocks", nBlocks)
+	nBytes := test_helpers.Du(t, fd)
+	if nBytes != 0 {
+		t.Fatalf("Empty file has %d bytes", nBytes)
 	}
 	// Allocate 30 bytes, keep size
 	// gocryptfs ||        (0 blocks)
@@ -195,9 +243,11 @@ func TestFallocate(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	_, nBlocks = test_helpers.Du(t, fd)
-	if want := 1; nBlocks/8 != int64(want) {
-		t.Errorf("Expected %d 4k block(s), got %d", want, nBlocks/8)
+	var want int64
+	nBytes = test_helpers.Du(t, fd)
+	want = 4096
+	if nBytes != want {
+		t.Errorf("Expected %d allocated bytes, have %d", want, nBytes)
 	}
 	test_helpers.VerifySize(t, fn, 0)
 	// Three ciphertext blocks. The middle one should be a file hole.
@@ -209,9 +259,10 @@ func TestFallocate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, nBlocks = test_helpers.Du(t, fd)
-	if want := 2; nBlocks/8 != int64(want) {
-		t.Errorf("Expected %d 4k block(s), got %d", want, nBlocks/8)
+	nBytes = test_helpers.Du(t, fd)
+	want = 2 * 4096
+	if wellKnown && nBytes != want {
+		t.Errorf("Expected %d allocated bytes, have %d", want, nBytes)
 	}
 	if md5 := test_helpers.Md5fn(fn); md5 != "5420afa22f6423a9f59e669540656bb4" {
 		t.Errorf("Wrong md5 %s", md5)
@@ -223,9 +274,10 @@ func TestFallocate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, nBlocks = test_helpers.Du(t, fd)
-	if want := 3; nBlocks/8 != int64(want) {
-		t.Errorf("Expected %d 4k block(s), got %d", want, nBlocks/8)
+	nBytes = test_helpers.Du(t, fd)
+	want = 3 * 4096
+	if nBytes != want {
+		t.Errorf("Expected %d allocated bytes, have %d", want, nBytes)
 	}
 	// Neither apparent size nor content should have changed
 	test_helpers.VerifySize(t, fn, 9000)
@@ -238,17 +290,19 @@ func TestFallocate(t *testing.T) {
 	//      ext4 |  d  |  h  |  d  |  (2 blocks)
 	file.Truncate(0)
 	file.Truncate(9000)
-	_, nBlocks = test_helpers.Du(t, fd)
-	if want := 2; nBlocks/8 != int64(want) {
-		t.Errorf("Expected %d 4k block(s), got %d", want, nBlocks/8)
+	nBytes = test_helpers.Du(t, fd)
+	want = 2 * 4096
+	if wellKnown && nBytes != want {
+		t.Errorf("Expected %d allocated bytes, have %d", want, nBytes)
 	}
 	// Allocate 10 bytes in the second block
 	// gocryptfs |  h   |   h  | d|   (1 block)
-	//      ext4 |  d  |  d  |  d  |  (2 blocks)
+	//      ext4 |  d  |  d  |  d  |  (3 blocks)
 	syscallcompat.Fallocate(fd, FALLOC_DEFAULT, 5000, 10)
-	_, nBlocks = test_helpers.Du(t, fd)
-	if want := 3; nBlocks/8 != int64(want) {
-		t.Errorf("Expected %d 4k block(s), got %d", want, nBlocks/8)
+	nBytes = test_helpers.Du(t, fd)
+	want = 3 * 4096
+	if wellKnown && nBytes != want {
+		t.Errorf("Expected %d allocated bytes, have %d", want, nBytes)
 	}
 	// Neither apparent size nor content should have changed
 	test_helpers.VerifySize(t, fn, 9000)
@@ -257,11 +311,12 @@ func TestFallocate(t *testing.T) {
 	}
 	// Grow the file to 4 blocks
 	// gocryptfs |  h   |  h   |  d   |d|  (2 blocks)
-	//      ext4 |  d  |  d  |  d  |  d  | (3 blocks)
+	//      ext4 |  d  |  d  |  d  |  d  | (4 blocks)
 	syscallcompat.Fallocate(fd, FALLOC_DEFAULT, 15000, 10)
-	_, nBlocks = test_helpers.Du(t, fd)
-	if want := 4; nBlocks/8 != int64(want) {
-		t.Errorf("Expected %d 4k block(s), got %d", want, nBlocks/8)
+	nBytes = test_helpers.Du(t, fd)
+	want = 4 * 4096
+	if wellKnown && nBytes != want {
+		t.Errorf("Expected %d allocated bytes, have %d", want, nBytes)
 	}
 	test_helpers.VerifySize(t, fn, 15010)
 	if md5 := test_helpers.Md5fn(fn); md5 != "c4c44c7a41ab7798a79d093eb44f99fc" {
@@ -278,7 +333,13 @@ func TestFallocate(t *testing.T) {
 		}
 	}
 	// Cleanup
+	file.Close()
 	syscall.Unlink(fn)
+	if !wellKnown {
+		// Even though most tests have been executed still, inform the user
+		// that some were disabled
+		t.Skipf("backing fs is not ext4 or tmpfs, skipped some disk-usage checks\n")
+	}
 }
 
 func TestAppend(t *testing.T) {
@@ -413,17 +474,17 @@ func TestRmwRace(t *testing.T) {
 func TestFiltered(t *testing.T) {
 	filteredFile := test_helpers.DefaultPlainDir + "/gocryptfs.conf"
 	file, err := os.Create(filteredFile)
-	if plaintextnames == true && err == nil {
+	if testcase.Plaintextnames && err == nil {
 		t.Errorf("should have failed but didn't")
-	} else if plaintextnames == false && err != nil {
+	} else if !testcase.Plaintextnames && err != nil {
 		t.Error(err)
 	}
 	file.Close()
 
 	err = os.Remove(filteredFile)
-	if plaintextnames == true && err == nil {
+	if testcase.Plaintextnames && err == nil {
 		t.Errorf("should have failed but didn't")
-	} else if plaintextnames == false && err != nil {
+	} else if !testcase.Plaintextnames && err != nil {
 		t.Error(err)
 	}
 }
@@ -435,9 +496,9 @@ func TestFilenameEncryption(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = os.Stat(test_helpers.DefaultCipherDir + "/TestFilenameEncryption.txt")
-	if plaintextnames == true && err != nil {
+	if testcase.Plaintextnames && err != nil {
 		t.Errorf("plaintextnames not working: %v", err)
-	} else if plaintextnames == false && err == nil {
+	} else if !testcase.Plaintextnames && err == nil {
 		t.Errorf("file name encryption not working")
 	}
 }
@@ -522,7 +583,7 @@ func TestLongNames(t *testing.T) {
 	}
 	// Long symlink
 	n255s := string(bytes.Repeat([]byte("s"), 255))
-	err = os.Symlink("/etc/motd", wd+n255s)
+	err = os.Symlink("/", wd+n255s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,4 +629,103 @@ func TestLchown(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+}
+
+// Set nanoseconds by path, symlink
+func TestUtimesNanoSymlink(t *testing.T) {
+	path := test_helpers.DefaultPlainDir + "/utimesnano_symlink"
+	err := os.Symlink("/some/nonexisting/file", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// syscall.UtimesNano does not provide a way to pass AT_SYMLINK_NOFOLLOW,
+	// so we call the external utility "touch", which does.
+	cmd := exec.Command("touch", "--no-dereference", path)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+	err = cmd.Run()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+type utimesTestcaseStruct struct {
+	// Input atime and mtime
+	in [2]syscall.Timespec
+	// Expected output atime and mtime
+	out [2]syscall.Timespec
+}
+
+func compareUtimes(want [2]syscall.Timespec, actual [2]syscall.Timespec) error {
+	tsNames := []string{"atime", "mtime"}
+	for i := range want {
+		if want[i].Sec != actual[i].Sec {
+			return fmt.Errorf("Wrong %s seconds: want=%d actual=%d", tsNames[i], want[i].Sec, actual[i].Sec)
+		}
+		if want[i].Nsec != actual[i].Nsec {
+			return fmt.Errorf("Wrong %s nanoseconds: want=%d actual=%d", tsNames[i], want[i].Nsec, actual[i].Nsec)
+		}
+	}
+	return nil
+}
+
+const _UTIME_OMIT = ((1 << 30) - 2)
+
+// doTestUtimesNano verifies that setting nanosecond-precision times on "path"
+// works correctly. Pass "/proc/self/fd/N" to test a file descriptor.
+func doTestUtimesNano(t *testing.T, path string) {
+	utimeTestcases := []utimesTestcaseStruct{
+		{
+			in:  [2]syscall.Timespec{{Sec: 50, Nsec: 0}, {Sec: 50, Nsec: 0}},
+			out: [2]syscall.Timespec{{Sec: 50, Nsec: 0}, {Sec: 50, Nsec: 0}},
+		},
+		{
+			in:  [2]syscall.Timespec{{Sec: 1, Nsec: 2}, {Sec: 3, Nsec: 4}},
+			out: [2]syscall.Timespec{{Sec: 1, Nsec: 2}, {Sec: 3, Nsec: 4}},
+		},
+		{
+			in:  [2]syscall.Timespec{{Sec: 7, Nsec: 8}, {Sec: 99, Nsec: _UTIME_OMIT}},
+			out: [2]syscall.Timespec{{Sec: 7, Nsec: 8}, {Sec: 3, Nsec: 4}},
+		},
+		{
+			in:  [2]syscall.Timespec{{Sec: 99, Nsec: _UTIME_OMIT}, {Sec: 5, Nsec: 6}},
+			out: [2]syscall.Timespec{{Sec: 7, Nsec: 8}, {Sec: 5, Nsec: 6}},
+		},
+	}
+	for i, tc := range utimeTestcases {
+		err := syscall.UtimesNano(path, tc.in[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var st syscall.Stat_t
+		err = syscall.Stat(path, &st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = compareUtimes(tc.out, [2]syscall.Timespec{st.Atim, st.Mtim})
+		if err != nil {
+			t.Errorf("Testcase %d: %v", i, err)
+		}
+	}
+}
+
+// Set nanoseconds by path, normal file
+func TestUtimesNano(t *testing.T) {
+	path := test_helpers.DefaultPlainDir + "/utimesnano"
+	err := ioutil.WriteFile(path, []byte("foobar"), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doTestUtimesNano(t, path)
+}
+
+// Set nanoseconds by fd
+func TestUtimesNanoFd(t *testing.T) {
+	path := test_helpers.DefaultPlainDir + "/utimesnanofd"
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	procPath := fmt.Sprintf("/proc/self/fd/%d", f.Fd())
+	doTestUtimesNano(t, procPath)
 }

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -33,20 +34,24 @@ type file struct {
 	// Every FUSE entrypoint should RLock(). The only user of Lock() is
 	// Release(), which closes the fd and sets "released" to true.
 	fdLock sync.RWMutex
-
 	// Was the file opened O_WRONLY?
 	writeOnly bool
-
 	// Content encryption helper
 	contentEnc *contentenc.ContentEnc
-
 	// Inode number
 	ino uint64
-
 	// File header
 	header *contentenc.FileHeader
+	// go-fuse nodefs.loopbackFile
+	loopbackFile nodefs.File
+	// Store what the last byte was written
+	lastWrittenOffset int64
+	// The opCount is used to judge whether "lastWrittenOffset" is still
+	// guaranteed to be correct.
+	lastOpCount uint64
 }
 
+// NewFile returns a new go-fuse File instance.
 func NewFile(fd *os.File, writeOnly bool, contentEnc *contentenc.ContentEnc) (nodefs.File, fuse.Status) {
 	var st syscall.Stat_t
 	err := syscall.Fstat(int(fd.Fd()), &st)
@@ -57,10 +62,11 @@ func NewFile(fd *os.File, writeOnly bool, contentEnc *contentenc.ContentEnc) (no
 	wlock.register(st.Ino)
 
 	return &file{
-		fd:         fd,
-		writeOnly:  writeOnly,
-		contentEnc: contentEnc,
-		ino:        st.Ino,
+		fd:           fd,
+		writeOnly:    writeOnly,
+		contentEnc:   contentEnc,
+		ino:          st.Ino,
+		loopbackFile: nodefs.NewLoopbackFile(fd),
 	}, fuse.OK
 }
 
@@ -81,7 +87,7 @@ func (f *file) SetInode(n *nodefs.Inode) {
 //
 // Returns io.EOF if the file is empty
 func (f *file) readHeader() error {
-	buf := make([]byte, contentenc.HEADER_LEN)
+	buf := make([]byte, contentenc.HeaderLen)
 	_, err := f.fd.ReadAt(buf, 0)
 	if err != nil {
 		return err
@@ -101,7 +107,7 @@ func (f *file) createHeader() error {
 	buf := h.Pack()
 
 	// Prevent partially written (=corrupt) header by preallocating the space beforehand
-	err := syscallcompat.EnospcPrealloc(int(f.fd.Fd()), 0, contentenc.HEADER_LEN)
+	err := syscallcompat.EnospcPrealloc(int(f.fd.Fd()), 0, contentenc.HeaderLen)
 	if err != nil {
 		tlog.Warn.Printf("ino%d: createHeader: prealloc failed: %s\n", f.ino, err.Error())
 		return err
@@ -160,13 +166,10 @@ func (f *file) doRead(off uint64, length uint64) ([]byte, fuse.Status) {
 	tlog.Debug.Printf("ReadAt offset=%d bytes (%d blocks), want=%d, got=%d", alignedOffset, firstBlockNo, alignedLength, n)
 
 	// Decrypt it
-	plaintext, err := f.contentEnc.DecryptBlocks(ciphertext, firstBlockNo, f.header.Id)
+	plaintext, err := f.contentEnc.DecryptBlocks(ciphertext, firstBlockNo, f.header.ID)
 	if err != nil {
 		curruptBlockNo := firstBlockNo + f.contentEnc.PlainOffToBlockNo(uint64(len(plaintext)))
-		cipherOff := f.contentEnc.BlockNoToCipherOff(curruptBlockNo)
-		plainOff := f.contentEnc.BlockNoToPlainOff(curruptBlockNo)
-		tlog.Warn.Printf("ino%d: doRead: corrupt block #%d (plainOff=%d, cipherOff=%d)",
-			f.ino, curruptBlockNo, plainOff, cipherOff)
+		tlog.Warn.Printf("ino%d: doRead: corrupt block #%d: %v", f.ino, curruptBlockNo, err)
 		return nil, fuse.EIO
 	}
 
@@ -199,7 +202,7 @@ func (f *file) Read(buf []byte, off int64) (resultData fuse.ReadResult, code fus
 	out, status := f.doRead(uint64(off), uint64(len(buf)))
 
 	if status == fuse.EIO {
-		tlog.Warn.Printf("ino%d: Read failed with EIO, offset=%d, length=%d", f.ino, len(buf), off)
+		tlog.Warn.Printf("ino%d: Read: returning EIO, offset=%d, length=%d", f.ino, len(buf), off)
 	}
 	if status != fuse.OK {
 		return nil, status
@@ -212,7 +215,7 @@ func (f *file) Read(buf []byte, off int64) (resultData fuse.ReadResult, code fus
 // doWrite - encrypt "data" and write it to plaintext offset "off"
 //
 // Arguments do not have to be block-aligned, read-modify-write is
-// performed internally as neccessary
+// performed internally as necessary
 //
 // Called by Write() for normal writing,
 // and by Truncate() to rewrite the last file block.
@@ -257,7 +260,7 @@ func (f *file) doWrite(data []byte, off int64) (uint32, fuse.Status) {
 
 		// Encrypt
 		blockOffset := b.BlockCipherOff()
-		blockData = f.contentEnc.EncryptBlock(blockData, b.BlockNo, f.header.Id)
+		blockData = f.contentEnc.EncryptBlock(blockData, b.BlockNo, f.header.ID)
 		tlog.Debug.Printf("ino%d: Writing %d bytes to block #%d",
 			f.ino, uint64(len(blockData))-f.contentEnc.BlockOverhead(), b.BlockNo)
 
@@ -282,6 +285,16 @@ func (f *file) doWrite(data []byte, off int64) (uint32, fuse.Status) {
 	return written, status
 }
 
+// isConsecutiveWrite returns true if the current write
+// directly (in time and space) follows the last write.
+// This is an optimisation for streaming writes on NFS where a
+// Stat() call is very expensive.
+// The caller must "wlock.lock(f.ino)" otherwise this check would be racy.
+func (f *file) isConsecutiveWrite(off int64) bool {
+	opCount := atomic.LoadUint64(&wlock.opCount)
+	return opCount == f.lastOpCount+1 && off == f.lastWrittenOffset+1
+}
+
 // Write - FUSE call
 //
 // If the write creates a hole, pads the file to the next block boundary.
@@ -297,23 +310,22 @@ func (f *file) Write(data []byte, off int64) (uint32, fuse.Status) {
 	}
 	wlock.lock(f.ino)
 	defer wlock.unlock(f.ino)
-
 	tlog.Debug.Printf("ino%d: FUSE Write: offset=%d length=%d", f.ino, off, len(data))
-
-	fi, err := f.fd.Stat()
-	if err != nil {
-		tlog.Warn.Printf("Write: Fstat failed: %v", err)
-		return 0, fuse.ToStatus(err)
-	}
-	plainSize := f.contentEnc.CipherSizeToPlainSize(uint64(fi.Size()))
-	if f.createsHole(plainSize, off) {
-		status := f.zeroPad(plainSize)
-		if status != fuse.OK {
-			tlog.Warn.Printf("zeroPad returned error %v", status)
+	// If the write creates a file hole, we have to zero-pad the last block.
+	// But if the write directly follows an earlier write, it cannot create a
+	// hole, and we can save one Stat() call.
+	if !f.isConsecutiveWrite(off) {
+		status := f.writePadHole(off)
+		if !status.Ok() {
 			return 0, status
 		}
 	}
-	return f.doWrite(data, off)
+	n, status := f.doWrite(data, off)
+	if status.Ok() {
+		f.lastOpCount = atomic.LoadUint64(&wlock.opCount)
+		f.lastWrittenOffset = off + int64(len(data)) - 1
+	}
+	return n, status
 }
 
 // Release - FUSE call, close file
@@ -386,35 +398,8 @@ func (f *file) GetAttr(a *fuse.Attr) fuse.Status {
 	return fuse.OK
 }
 
-const _UTIME_OMIT = ((1 << 30) - 2)
-
 func (f *file) Utimens(a *time.Time, m *time.Time) fuse.Status {
 	f.fdLock.RLock()
 	defer f.fdLock.RUnlock()
-
-	ts := make([]syscall.Timespec, 2)
-
-	if a == nil {
-		ts[0].Nsec = _UTIME_OMIT
-	} else {
-		ts[0].Sec = a.Unix()
-	}
-
-	if m == nil {
-		ts[1].Nsec = _UTIME_OMIT
-	} else {
-		ts[1].Sec = m.Unix()
-	}
-
-	fn := fmt.Sprintf("/proc/self/fd/%d", f.fd.Fd())
-	err := syscall.UtimesNano(fn, ts)
-	if err != nil {
-		tlog.Debug.Printf("UtimesNano on %q failed: %v", fn, err)
-	}
-	if err == syscall.ENOENT {
-		// If /proc/self/fd/X did not exist, the actual error is that the file
-		// descriptor was invalid.
-		return fuse.EBADF
-	}
-	return fuse.ToStatus(err)
+	return f.loopbackFile.Utimens(a, m)
 }

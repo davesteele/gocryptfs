@@ -1,7 +1,6 @@
 package nametransform
 
 import (
-	"errors"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -14,23 +13,23 @@ import (
 )
 
 const (
-	// identical to AES block size
-	dirIVLen = 16
-	// dirIV is stored in this file. Exported because we have to ignore this
-	// name in directory listing.
+	// DirIVLen is identical to AES block size
+	DirIVLen = 16
+	// DirIVFilename is the filename used to store directory IV.
+	// Exported because we have to ignore this name in directory listing.
 	DirIVFilename = "gocryptfs.diriv"
 )
 
 // ReadDirIV - read the "gocryptfs.diriv" file from "dir" (absolute ciphertext path)
 // This function is exported because it allows for an efficient readdir implementation.
 func ReadDirIV(dir string) (iv []byte, err error) {
-	dirfd, err := os.Open(dir)
+	fd, err := os.Open(filepath.Join(dir, DirIVFilename))
 	if err != nil {
+		// Note: getting errors here is normal because of concurrent deletes.
 		return nil, err
 	}
-	defer dirfd.Close()
-
-	return ReadDirIVAt(dirfd)
+	defer fd.Close()
+	return fdReadDirIV(fd)
 }
 
 // ReadDirIVAt reads "gocryptfs.diriv" from the directory that is opened as "dirfd".
@@ -44,17 +43,23 @@ func ReadDirIVAt(dirfd *os.File) (iv []byte, err error) {
 	}
 	fd := os.NewFile(uintptr(fdRaw), DirIVFilename)
 	defer fd.Close()
+	return fdReadDirIV(fd)
+}
 
-	iv = make([]byte, dirIVLen+1)
+// fdReadDirIV reads and verifies the DirIV from an opened gocryptfs.diriv file.
+func fdReadDirIV(fd *os.File) (iv []byte, err error) {
+	// We want to detect if the file is bigger than DirIVLen, so
+	// make the buffer 1 byte bigger than necessary.
+	iv = make([]byte, DirIVLen+1)
 	n, err := fd.Read(iv)
 	if err != nil {
 		tlog.Warn.Printf("ReadDirIVAt: Read failed: %v", err)
 		return nil, err
 	}
 	iv = iv[0:n]
-	if len(iv) != dirIVLen {
-		tlog.Warn.Printf("ReadDirIVAt: wanted %d bytes, got %d", dirIVLen, len(iv))
-		return nil, errors.New("invalid iv length")
+	if len(iv) != DirIVLen {
+		tlog.Warn.Printf("ReadDirIVAt: wanted %d bytes, got %d", DirIVLen, len(iv))
+		return nil, syscall.EINVAL
 	}
 	return iv, nil
 }
@@ -63,7 +68,7 @@ func ReadDirIVAt(dirfd *os.File) (iv []byte, err error) {
 // This function is exported because it is used from pathfs_frontend, main,
 // and also the automated tests.
 func WriteDirIV(dir string) error {
-	iv := cryptocore.RandBytes(dirIVLen)
+	iv := cryptocore.RandBytes(DirIVLen)
 	file := filepath.Join(dir, DirIVFilename)
 	err := ioutil.WriteFile(file, iv, 0400)
 	if err != nil {
@@ -117,28 +122,4 @@ func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (cip
 	cParentDir = filepath.Dir(cipherPath)
 	be.DirIVCache.store(parentDir, iv, cParentDir)
 	return cipherPath, nil
-}
-
-// DecryptPathDirIV - decrypt path using EME with DirIV
-//
-// TODO This has only a single user, Readlink(), and only for compatability with
-// gocryptfs v0.5. Drop?
-func (be *NameTransform) DecryptPathDirIV(encryptedPath string, rootDir string) (string, error) {
-	var wd = rootDir
-	var plainNames []string
-	encryptedNames := strings.Split(encryptedPath, "/")
-	tlog.Debug.Printf("DecryptPathDirIV: decrypting %v\n", encryptedNames)
-	for _, encryptedName := range encryptedNames {
-		iv, err := ReadDirIV(wd)
-		if err != nil {
-			return "", err
-		}
-		plainName, err := be.DecryptName(encryptedName, iv)
-		if err != nil {
-			return "", err
-		}
-		plainNames = append(plainNames, plainName)
-		wd = filepath.Join(wd, encryptedName)
-	}
-	return filepath.Join(plainNames...), nil
 }

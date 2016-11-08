@@ -11,11 +11,28 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
+// NonceMode determines how nonces are created.
+type NonceMode int
+
 const (
-	// Default plaintext block size
+	// DefaultBS is the default plaintext block size
 	DefaultBS = 4096
+	// DefaultIVBits is the default length of IV, in bits.
+	// We always use 128-bit IVs for file content, but the
+	// key in the config file is encrypted with a 96-bit IV.
+	DefaultIVBits = 128
+
+	_ = iota // skip zero
+	// RandomNonce chooses a random nonce.
+	RandomNonce NonceMode = iota
+	// ReverseDeterministicNonce chooses a deterministic nonce, suitable for
+	// use in reverse mode.
+	ReverseDeterministicNonce NonceMode = iota
+	// ExternalNonce derives a nonce from external sources.
+	ExternalNonce NonceMode = iota
 )
 
+// ContentEnc is used to encipher and decipher file content.
 type ContentEnc struct {
 	// Cryptographic primitives
 	cryptoCore *cryptocore.CryptoCore
@@ -25,10 +42,12 @@ type ContentEnc struct {
 	cipherBS uint64
 	// All-zero block of size cipherBS, for fast compares
 	allZeroBlock []byte
+	// All-zero block of size IVBitLen/8, for fast compares
+	allZeroNonce []byte
 }
 
+// New returns an initialized ContentEnc instance.
 func New(cc *cryptocore.CryptoCore, plainBS uint64) *ContentEnc {
-
 	cipherBS := plainBS + uint64(cc.IVLen) + cryptocore.AuthTagLen
 
 	return &ContentEnc{
@@ -36,6 +55,7 @@ func New(cc *cryptocore.CryptoCore, plainBS uint64) *ContentEnc {
 		plainBS:      plainBS,
 		cipherBS:     cipherBS,
 		allZeroBlock: make([]byte, cipherBS),
+		allZeroNonce: make([]byte, cc.IVLen),
 	}
 }
 
@@ -49,15 +69,16 @@ func (be *ContentEnc) CipherBS() uint64 {
 	return be.cipherBS
 }
 
-// DecryptBlocks - Decrypt a number of blocks
-func (be *ContentEnc) DecryptBlocks(ciphertext []byte, firstBlockNo uint64, fileId []byte) ([]byte, error) {
+// DecryptBlocks decrypts a number of blocks
+// TODO refactor to three-param for
+func (be *ContentEnc) DecryptBlocks(ciphertext []byte, firstBlockNo uint64, fileID []byte) ([]byte, error) {
 	cBuf := bytes.NewBuffer(ciphertext)
 	var err error
 	var pBuf bytes.Buffer
 	for cBuf.Len() > 0 {
 		cBlock := cBuf.Next(int(be.cipherBS))
 		var pBlock []byte
-		pBlock, err = be.DecryptBlock(cBlock, firstBlockNo, fileId)
+		pBlock, err = be.DecryptBlock(cBlock, firstBlockNo, fileID)
 		if err != nil {
 			break
 		}
@@ -71,7 +92,7 @@ func (be *ContentEnc) DecryptBlocks(ciphertext []byte, firstBlockNo uint64, file
 //
 // Corner case: A full-sized block of all-zero ciphertext bytes is translated
 // to an all-zero plaintext block, i.e. file hole passtrough.
-func (be *ContentEnc) DecryptBlock(ciphertext []byte, blockNo uint64, fileId []byte) ([]byte, error) {
+func (be *ContentEnc) DecryptBlock(ciphertext []byte, blockNo uint64, fileID []byte) ([]byte, error) {
 
 	// Empty block?
 	if len(ciphertext) == 0 {
@@ -91,15 +112,21 @@ func (be *ContentEnc) DecryptBlock(ciphertext []byte, blockNo uint64, fileId []b
 
 	// Extract nonce
 	nonce := ciphertext[:be.cryptoCore.IVLen]
+	if bytes.Equal(nonce, be.allZeroNonce) {
+		// Bug in tmpfs?
+		// https://github.com/rfjakob/gocryptfs/issues/56
+		// http://www.spinics.net/lists/kernel/msg2370127.html
+		return nil, errors.New("all-zero nonce")
+	}
 	ciphertextOrig := ciphertext
 	ciphertext = ciphertext[be.cryptoCore.IVLen:]
 
 	// Decrypt
 	var plaintext []byte
 	aData := make([]byte, 8)
-	aData = append(aData, fileId...)
+	aData = append(aData, fileID...)
 	binary.BigEndian.PutUint64(aData, blockNo)
-	plaintext, err := be.cryptoCore.Gcm.Open(plaintext, nonce, ciphertext, aData)
+	plaintext, err := be.cryptoCore.AEADCipher.Open(plaintext, nonce, ciphertext, aData)
 
 	if err != nil {
 		tlog.Warn.Printf("DecryptBlock: %s, len=%d", err.Error(), len(ciphertextOrig))
@@ -110,16 +137,37 @@ func (be *ContentEnc) DecryptBlock(ciphertext []byte, blockNo uint64, fileId []b
 	return plaintext, nil
 }
 
-// encryptBlock - Encrypt and add IV and MAC
+// EncryptBlock - Encrypt plaintext using a random nonce.
+// blockNo and fileID are used as associated data.
+// The output is nonce + ciphertext + tag.
 func (be *ContentEnc) EncryptBlock(plaintext []byte, blockNo uint64, fileID []byte) []byte {
+	// Get a fresh random nonce
+	nonce := be.cryptoCore.IVGenerator.Get()
+	return be.doEncryptBlock(plaintext, blockNo, fileID, nonce)
+}
 
+// EncryptBlockNonce - Encrypt plaintext using a nonce chosen by the caller.
+// blockNo and fileID are used as associated data.
+// The output is nonce + ciphertext + tag.
+// This function can only be used in SIV mode.
+func (be *ContentEnc) EncryptBlockNonce(plaintext []byte, blockNo uint64, fileID []byte, nonce []byte) []byte {
+	if be.cryptoCore.AEADBackend != cryptocore.BackendAESSIV {
+		panic("deterministic nonces are only secure in SIV mode")
+	}
+	return be.doEncryptBlock(plaintext, blockNo, fileID, nonce)
+}
+
+// doEncryptBlock is the backend for EncryptBlock and EncryptBlockNonce.
+// blockNo and fileID are used as associated data.
+// The output is nonce + ciphertext + tag.
+func (be *ContentEnc) doEncryptBlock(plaintext []byte, blockNo uint64, fileID []byte, nonce []byte) []byte {
 	// Empty block?
 	if len(plaintext) == 0 {
 		return plaintext
 	}
-
-	// Get fresh nonce
-	nonce := be.cryptoCore.GcmIVGen.Get()
+	if len(nonce) != be.cryptoCore.IVLen {
+		panic("wrong nonce length")
+	}
 
 	// Authenticate block with block number and file ID
 	aData := make([]byte, 8)
@@ -127,7 +175,7 @@ func (be *ContentEnc) EncryptBlock(plaintext []byte, blockNo uint64, fileID []by
 	aData = append(aData, fileID...)
 
 	// Encrypt plaintext and append to nonce
-	ciphertext := be.cryptoCore.Gcm.Seal(nonce, nonce, plaintext, aData)
+	ciphertext := be.cryptoCore.AEADCipher.Seal(nonce, nonce, plaintext, aData)
 
 	return ciphertext
 }

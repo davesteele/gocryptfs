@@ -1,116 +1,48 @@
 package main
 
 import (
-	"encoding/json"
-	"flag"
 	"fmt"
-	"log/syslog"
 	"os"
-	"os/exec"
-	"os/signal"
+
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"strconv"
-	"strings"
-	"syscall"
 	"time"
-
-	"github.com/hanwen/go-fuse/fuse"
-	"github.com/hanwen/go-fuse/fuse/nodefs"
-	"github.com/hanwen/go-fuse/fuse/pathfs"
 
 	"github.com/rfjakob/gocryptfs/internal/configfile"
 	"github.com/rfjakob/gocryptfs/internal/contentenc"
-	"github.com/rfjakob/gocryptfs/internal/cryptocore"
-	"github.com/rfjakob/gocryptfs/internal/fusefrontend"
-	"github.com/rfjakob/gocryptfs/internal/nametransform"
-	"github.com/rfjakob/gocryptfs/internal/prefer_openssl"
 	"github.com/rfjakob/gocryptfs/internal/readpassword"
+	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
+// Exit codes
 const (
-	// Exit codes
-	ERREXIT_USAGE      = 1
-	ERREXIT_MOUNT      = 3
-	ERREXIT_CIPHERDIR  = 6
-	ERREXIT_INIT       = 7
-	ERREXIT_LOADCONF   = 8
-	ERREXIT_MOUNTPOINT = 10
+	ErrExitUsage      = 1
+	ErrExitMount      = 3
+	ErrExitCipherDir  = 6
+	ErrExitInit       = 7
+	ErrExitLoadConf   = 8
+	ErrExitMountPoint = 10
 )
-
-type argContainer struct {
-	debug, init, zerokey, fusedebug, openssl, passwd, foreground, version,
-	plaintextnames, quiet, nosyslog, wpanic,
-	longnames, allow_other, ro bool
-	masterkey, mountpoint, cipherdir, cpuprofile, config, extpass,
-	memprofile, o string
-	notifypid, scryptn int
-}
-
-var flagSet *flag.FlagSet
 
 const pleaseBuildBash = "[not set - please compile using ./build.bash]"
 
-// gocryptfs version according to git, set by build.bash
+// GitVersion is the gocryptfs version according to git, set by build.bash
 var GitVersion = pleaseBuildBash
 
-// go-fuse library version, set by build.bash
+// GitVersionFuse is the go-fuse library version, set by build.bash
 var GitVersionFuse = pleaseBuildBash
 
-// Unix timestamp, set by build.bash
+// BuildTime is the Unix timestamp, set by build.bash
 var BuildTime = "0"
-
-// initDir initializes an empty directory for use as a gocryptfs cipherdir.
-func initDir(args *argContainer) {
-	err := checkDirEmpty(args.cipherdir)
-	if err != nil {
-		tlog.Fatal.Printf("Invalid cipherdir: %v", err)
-		os.Exit(ERREXIT_INIT)
-	}
-
-	// Create gocryptfs.conf
-	if args.extpass == "" {
-		tlog.Info.Printf("Choose a password for protecting your files.")
-	} else {
-		tlog.Info.Printf("Using password provided via -extpass.")
-	}
-	password := readpassword.Twice(args.extpass)
-	creator := tlog.ProgramName + " " + GitVersion
-	err = configfile.CreateConfFile(args.config, password, args.plaintextnames, args.scryptn, creator)
-	if err != nil {
-		tlog.Fatal.Println(err)
-		os.Exit(ERREXIT_INIT)
-	}
-
-	if !args.plaintextnames {
-		// Create gocryptfs.diriv in the root dir
-		err = nametransform.WriteDirIV(args.cipherdir)
-		if err != nil {
-			tlog.Fatal.Println(err)
-			os.Exit(ERREXIT_INIT)
-		}
-	}
-
-	tlog.Info.Printf(tlog.ColorGreen + "The filesystem has been created successfully." + tlog.ColorReset)
-	wd, _ := os.Getwd()
-	friendlyPath, _ := filepath.Rel(wd, args.cipherdir)
-	if strings.HasPrefix(friendlyPath, "../") {
-		// A relative path that starts with "../" is pretty unfriendly, just
-		// keep the absolute path.
-		friendlyPath = args.cipherdir
-	}
-	tlog.Info.Printf(tlog.ColorGrey+"You can now mount it using: %s %s MOUNTPOINT"+tlog.ColorReset,
-		tlog.ProgramName, friendlyPath)
-	os.Exit(0)
-}
 
 func usageText() {
 	printVersion()
 	fmt.Printf(`
 Usage: %s -init|-passwd [OPTIONS] CIPHERDIR
-  or   %s [OPTIONS] CIPHERDIR MOUNTPOINT
+  or   %s [OPTIONS] CIPHERDIR MOUNTPOINT [-o COMMA-SEPARATED-OPTIONS]
 
 Options:
 `, tlog.ProgramName, tlog.ProgramName)
@@ -118,22 +50,27 @@ Options:
 	flagSet.PrintDefaults()
 }
 
-// loadConfig - load the config file "filename", prompting the user for the password
+// loadConfig loads the config file "args.config", prompting the user for the password
 func loadConfig(args *argContainer) (masterkey []byte, confFile *configfile.ConfFile) {
-	// Check if the file exists at all before prompting for a password
-	_, err := os.Stat(args.config)
+	// Check if the file can be opened at all before prompting for a password
+	fd, err := os.Open(args.config)
 	if err != nil {
-		tlog.Fatal.Printf("Config file not found: %v", err)
-		os.Exit(ERREXIT_LOADCONF)
+		tlog.Fatal.Printf("Cannot open config file: %v", err)
+		os.Exit(ErrExitLoadConf)
 	}
-	pw := readpassword.Once(args.extpass)
-	tlog.Info.Println("Decrypting master key")
-	masterkey, confFile, err = configfile.LoadConfFile(args.config, pw)
+	fd.Close()
+	if args.masterkey != "" {
+		masterkey = parseMasterKey(args.masterkey)
+		_, confFile, err = configfile.LoadConfFile(args.config, "")
+	} else {
+		pw := readpassword.Once(args.extpass)
+		tlog.Info.Println("Decrypting master key")
+		masterkey, confFile, err = configfile.LoadConfFile(args.config, pw)
+	}
 	if err != nil {
 		tlog.Fatal.Println(err)
-		os.Exit(ERREXIT_LOADCONF)
+		os.Exit(ErrExitLoadConf)
 	}
-
 	return masterkey, confFile
 }
 
@@ -143,12 +80,24 @@ func changePassword(args *argContainer) {
 	tlog.Info.Println("Please enter your new password.")
 	newPw := readpassword.Twice(args.extpass)
 	confFile.EncryptKey(masterkey, newPw, confFile.ScryptObject.LogN())
+	if args.masterkey != "" {
+		bak := args.config + ".bak"
+		err := os.Link(args.config, bak)
+		if err != nil {
+			tlog.Fatal.Printf("Could not create backup file: %v", err)
+			os.Exit(ErrExitInit)
+		}
+		tlog.Info.Printf(tlog.ColorGrey+
+			"A copy of the old config file has been created at %q.\n"+
+			"Delete it after you have verified that you can access your files with the new password."+
+			tlog.ColorReset, bak)
+	}
 	err := confFile.WriteFile()
 	if err != nil {
 		tlog.Fatal.Println(err)
-		os.Exit(ERREXIT_INIT)
+		os.Exit(ErrExitInit)
 	}
-	tlog.Info.Printf("Password changed.")
+	tlog.Info.Printf(tlog.ColorGreen + "Password changed." + tlog.ColorReset)
 	os.Exit(0)
 }
 
@@ -160,65 +109,26 @@ func printVersion() {
 		t := time.Unix(i, 0).UTC()
 		humanTime = fmt.Sprintf("%d-%02d-%02d", t.Year(), t.Month(), t.Day())
 	}
+	buildFlags := ""
+	if stupidgcm.BuiltWithoutOpenssl {
+		buildFlags = " without_openssl"
+	}
 	built := fmt.Sprintf("%s %s", humanTime, runtime.Version())
-	fmt.Printf("%s %s; go-fuse %s; %s\n",
-		tlog.ProgramName, GitVersion, GitVersionFuse, built)
+	fmt.Printf("%s %s%s; go-fuse %s; %s\n",
+		tlog.ProgramName, GitVersion, buildFlags, GitVersionFuse, built)
 }
 
 func main() {
 	runtime.GOMAXPROCS(4)
 	var err error
-	var args argContainer
-
-	// Parse command line arguments
-	var opensslAuto string
-	flagSet = flag.NewFlagSet(tlog.ProgramName, flag.ExitOnError)
-	flagSet.Usage = usageText
-	flagSet.BoolVar(&args.debug, "d", false, "")
-	flagSet.BoolVar(&args.debug, "debug", false, "Enable debug output")
-	flagSet.BoolVar(&args.fusedebug, "fusedebug", false, "Enable fuse library debug output")
-	flagSet.BoolVar(&args.init, "init", false, "Initialize encrypted directory")
-	flagSet.BoolVar(&args.zerokey, "zerokey", false, "Use all-zero dummy master key")
-	// Tri-state true/false/auto
-	flagSet.StringVar(&opensslAuto, "openssl", "auto", "Use OpenSSL instead of built-in Go crypto")
-	flagSet.BoolVar(&args.passwd, "passwd", false, "Change password")
-	flagSet.BoolVar(&args.foreground, "f", false, "Stay in the foreground")
-	flagSet.BoolVar(&args.version, "version", false, "Print version and exit")
-	flagSet.BoolVar(&args.plaintextnames, "plaintextnames", false, "Do not encrypt file names")
-	flagSet.BoolVar(&args.quiet, "q", false, "")
-	flagSet.BoolVar(&args.quiet, "quiet", false, "Quiet - silence informational messages")
-	flagSet.BoolVar(&args.nosyslog, "nosyslog", false, "Do not redirect output to syslog when running in the background")
-	flagSet.BoolVar(&args.wpanic, "wpanic", false, "When encountering a warning, panic and exit immediately")
-	flagSet.BoolVar(&args.longnames, "longnames", true, "Store names longer than 176 bytes in extra files")
-	flagSet.BoolVar(&args.allow_other, "allow_other", false, "Allow other users to access the filesystem. "+
-		"Only works if user_allow_other is set in /etc/fuse.conf.")
-	flagSet.BoolVar(&args.ro, "ro", false, "Mount the filesystem read-only")
-	flagSet.StringVar(&args.masterkey, "masterkey", "", "Mount with explicit master key")
-	flagSet.StringVar(&args.cpuprofile, "cpuprofile", "", "Write cpu profile to specified file")
-	flagSet.StringVar(&args.memprofile, "memprofile", "", "Write memory profile to specified file")
-	flagSet.StringVar(&args.config, "config", "", "Use specified config file instead of CIPHERDIR/gocryptfs.conf")
-	flagSet.StringVar(&args.extpass, "extpass", "", "Use external program for the password prompt")
-	flagSet.StringVar(&args.o, "o", "", "Pass additional mount options to the kernel, comma-separated list")
-	flagSet.IntVar(&args.notifypid, "notifypid", 0, "Send USR1 to the specified process after "+
-		"successful mount - used internally for daemonization")
-	flagSet.IntVar(&args.scryptn, "scryptn", configfile.ScryptDefaultLogN, "scrypt cost parameter logN. "+
-		"Setting this to a lower value speeds up mounting but makes the password susceptible to brute-force attacks")
-	flagSet.Parse(os.Args[1:])
-
-	// "-openssl" needs some post-processing
-	if opensslAuto == "auto" {
-		args.openssl = prefer_openssl.PreferOpenSSL()
-	} else {
-		args.openssl, err = strconv.ParseBool(opensslAuto)
-		if err != nil {
-			tlog.Fatal.Printf("Invalid \"-openssl\" setting: %v", err)
-			os.Exit(ERREXIT_USAGE)
-		}
-	}
-
-	// Fork a child into the background if "-f" is not set AND we are mounting a filesystem
+	// Parse all command-line options (i.e. arguments starting with "-")
+	// into "args". Path arguments are parsed below.
+	args := parseCliOpts()
+	// Fork a child into the background if "-f" is not set AND we are mounting
+	// a filesystem. The child will do all the work.
 	if !args.foreground && flagSet.NArg() == 2 {
-		forkChild() // does not return
+		ret := forkChild()
+		os.Exit(ret)
 	}
 	if args.debug {
 		tlog.Debug.Enabled = true
@@ -240,24 +150,31 @@ func main() {
 		err = checkDir(args.cipherdir)
 		if err != nil {
 			tlog.Fatal.Printf("Invalid cipherdir: %v", err)
-			os.Exit(ERREXIT_CIPHERDIR)
+			os.Exit(ErrExitCipherDir)
 		}
 	} else {
 		usageText()
-		os.Exit(ERREXIT_USAGE)
+		os.Exit(ErrExitUsage)
 	}
 	// "-q"
 	if args.quiet {
 		tlog.Info.Enabled = false
+	}
+	// "-reverse" implies "-aessiv"
+	if args.reverse {
+		args.aessiv = true
 	}
 	// "-config"
 	if args.config != "" {
 		args.config, err = filepath.Abs(args.config)
 		if err != nil {
 			tlog.Fatal.Printf("Invalid \"-config\" setting: %v", err)
-			os.Exit(ERREXIT_INIT)
+			os.Exit(ErrExitInit)
 		}
 		tlog.Info.Printf("Using config file at custom location %s", args.config)
+		args._configCustom = true
+	} else if args.reverse {
+		args.config = filepath.Join(args.cipherdir, configfile.ConfReverseName)
 	} else {
 		args.config = filepath.Join(args.cipherdir, configfile.ConfDefaultName)
 	}
@@ -268,7 +185,7 @@ func main() {
 		f, err = os.Create(args.cpuprofile)
 		if err != nil {
 			tlog.Fatal.Println(err)
-			os.Exit(ERREXIT_INIT)
+			os.Exit(ErrExitInit)
 		}
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
@@ -280,7 +197,7 @@ func main() {
 		f, err = os.Create(args.memprofile)
 		if err != nil {
 			tlog.Fatal.Println(err)
-			os.Exit(ERREXIT_INIT)
+			os.Exit(ErrExitInit)
 		}
 		defer func() {
 			pprof.WriteHeapProfile(f)
@@ -292,17 +209,17 @@ func main() {
 		tlog.Info.Printf("Note: You must unmount gracefully, otherwise the profile file(s) will stay empty!\n")
 	}
 	// "-openssl"
-	if args.openssl == false {
+	if !args.openssl {
 		tlog.Debug.Printf("OpenSSL disabled, using Go GCM")
 	} else {
 		tlog.Debug.Printf("OpenSSL enabled")
 	}
-	// Operation flags: init, passwd or mount
+	// Operation flags: -init or -passwd; otherwise: mount
 	// "-init"
 	if args.init {
 		if flagSet.NArg() > 1 {
 			tlog.Fatal.Printf("Usage: %s -init [OPTIONS] CIPHERDIR", tlog.ProgramName)
-			os.Exit(ERREXIT_USAGE)
+			os.Exit(ErrExitUsage)
 		}
 		initDir(&args) // does not return
 	}
@@ -310,164 +227,17 @@ func main() {
 	if args.passwd {
 		if flagSet.NArg() > 1 {
 			tlog.Fatal.Printf("Usage: %s -passwd [OPTIONS] CIPHERDIR", tlog.ProgramName)
-			os.Exit(ERREXIT_USAGE)
+			os.Exit(ErrExitUsage)
 		}
 		changePassword(&args) // does not return
 	}
-	// Mount
-	// Check mountpoint
+	// Default operation: mount.
 	if flagSet.NArg() != 2 {
-		tlog.Fatal.Printf("Usage: %s [OPTIONS] CIPHERDIR MOUNTPOINT", tlog.ProgramName)
-		os.Exit(ERREXIT_USAGE)
+		prettyArgs := prettyArgs()
+		tlog.Info.Printf("Wrong number of arguments (have %d, want 2). You passed: %s",
+			flagSet.NArg(), prettyArgs)
+		tlog.Fatal.Printf("Usage: %s [OPTIONS] CIPHERDIR MOUNTPOINT [-o COMMA-SEPARATED-OPTIONS]", tlog.ProgramName)
+		os.Exit(ErrExitUsage)
 	}
-	args.mountpoint, err = filepath.Abs(flagSet.Arg(1))
-	if err != nil {
-		tlog.Fatal.Printf("Invalid mountpoint: %v", err)
-		os.Exit(ERREXIT_MOUNTPOINT)
-	}
-	err = checkDirEmpty(args.mountpoint)
-	if err != nil {
-		tlog.Fatal.Printf("Invalid mountpoint: %v", err)
-		os.Exit(ERREXIT_MOUNTPOINT)
-	}
-	// Get master key
-	var masterkey []byte
-	var confFile *configfile.ConfFile
-	if args.masterkey != "" {
-		// "-masterkey"
-		tlog.Info.Printf("Using explicit master key.")
-		masterkey = parseMasterKey(args.masterkey)
-		tlog.Info.Printf(tlog.ColorYellow +
-			"THE MASTER KEY IS VISIBLE VIA \"ps ax\" AND MAY BE STORED IN YOUR SHELL HISTORY!\n" +
-			"ONLY USE THIS MODE FOR EMERGENCIES." + tlog.ColorReset)
-	} else if args.zerokey {
-		// "-zerokey"
-		tlog.Info.Printf("Using all-zero dummy master key.")
-		tlog.Info.Printf(tlog.ColorYellow +
-			"ZEROKEY MODE PROVIDES NO SECURITY AT ALL AND SHOULD ONLY BE USED FOR TESTING." +
-			tlog.ColorReset)
-		masterkey = make([]byte, cryptocore.KeyLen)
-	} else {
-		// Load master key from config file
-		masterkey, confFile = loadConfig(&args)
-		printMasterKey(masterkey)
-	}
-	// Initialize FUSE server
-	tlog.Debug.Printf("cli args: %v", args)
-	srv := initFuseFrontend(masterkey, args, confFile)
-	tlog.Info.Println(tlog.ColorGreen + "Filesystem mounted and ready." + tlog.ColorReset)
-	// We are ready - send USR1 signal to our parent and switch to syslog
-	if args.notifypid > 0 {
-		sendUsr1(args.notifypid)
-
-		if !args.nosyslog {
-			tlog.Info.SwitchToSyslog(syslog.LOG_USER | syslog.LOG_INFO)
-			tlog.Debug.SwitchToSyslog(syslog.LOG_USER | syslog.LOG_DEBUG)
-			tlog.Warn.SwitchToSyslog(syslog.LOG_USER | syslog.LOG_WARNING)
-			tlog.SwitchLoggerToSyslog(syslog.LOG_USER | syslog.LOG_WARNING)
-		}
-	}
-	// Wait for SIGINT in the background and unmount ourselves if we get it.
-	// This prevents a dangling "Transport endpoint is not connected" mountpoint.
-	handleSigint(srv, args.mountpoint)
-	// Jump into server loop. Returns when it gets an umount request from the kernel.
-	srv.Serve()
-	// main exits with code 0
-}
-
-// initFuseFrontend - initialize gocryptfs/fusefrontend
-// Calls os.Exit on errors
-func initFuseFrontend(key []byte, args argContainer, confFile *configfile.ConfFile) *fuse.Server {
-
-	// Reconciliate CLI and config file arguments into a Args struct that is passed to the
-	// filesystem implementation
-	frontendArgs := fusefrontend.Args{
-		Cipherdir:      args.cipherdir,
-		Masterkey:      key,
-		OpenSSL:        args.openssl,
-		PlaintextNames: args.plaintextnames,
-		LongNames:      args.longnames,
-	}
-	// confFile is nil when "-zerokey" or "-masterkey" was used
-	if confFile != nil {
-		// Settings from the config file override command line args
-		frontendArgs.PlaintextNames = confFile.IsFeatureFlagSet(configfile.FlagPlaintextNames)
-	}
-	// If allow_other is set and we run as root, try to give newly created files to
-	// the right user.
-	if args.allow_other && os.Getuid() == 0 {
-		frontendArgs.PreserveOwner = true
-	}
-	jsonBytes, _ := json.MarshalIndent(frontendArgs, "", "\t")
-	tlog.Debug.Printf("frontendArgs: %s", string(jsonBytes))
-
-	finalFs := fusefrontend.NewFS(frontendArgs)
-	pathFsOpts := &pathfs.PathNodeFsOptions{ClientInodes: true}
-	pathFs := pathfs.NewPathNodeFs(finalFs, pathFsOpts)
-	fuseOpts := &nodefs.Options{
-		// These options are to be compatible with libfuse defaults,
-		// making benchmarking easier.
-		NegativeTimeout: time.Second,
-		AttrTimeout:     time.Second,
-		EntryTimeout:    time.Second,
-	}
-	conn := nodefs.NewFileSystemConnector(pathFs.Root(), fuseOpts)
-	var mOpts fuse.MountOptions
-	mOpts.AllowOther = false
-	if args.allow_other {
-		tlog.Info.Printf(tlog.ColorYellow + "The option \"-allow_other\" is set. Make sure the file " +
-			"permissions protect your data from unwanted access." + tlog.ColorReset)
-		mOpts.AllowOther = true
-		// Make the kernel check the file permissions for us
-		mOpts.Options = append(mOpts.Options, "default_permissions")
-	}
-	// Set values shown in "df -T" and friends
-	// First column, "Filesystem"
-	mOpts.Options = append(mOpts.Options, "fsname="+args.cipherdir)
-	// Second column, "Type", will be shown as "fuse." + Name
-	mOpts.Name = "gocryptfs"
-
-	// The kernel enforces read-only operation, we just have to pass "ro".
-	if args.ro {
-		mOpts.Options = append(mOpts.Options, "ro")
-	}
-	// Add additional mount options (if any) after the stock ones, so the user has
-	// a chance to override them.
-	if args.o != "" {
-		parts := strings.Split(args.o, ",")
-		tlog.Debug.Printf("Adding -o mount options: %v", parts)
-		mOpts.Options = append(mOpts.Options, parts...)
-	}
-	srv, err := fuse.NewServer(conn.RawFS(), args.mountpoint, &mOpts)
-	if err != nil {
-		tlog.Fatal.Printf("Mount failed: %v", err)
-		os.Exit(ERREXIT_MOUNT)
-	}
-	srv.SetDebug(args.fusedebug)
-
-	// All FUSE file and directory create calls carry explicit permission
-	// information. We need an unrestricted umask to create the files and
-	// directories with the requested permissions.
-	syscall.Umask(0000)
-
-	return srv
-}
-
-func handleSigint(srv *fuse.Server, mountpoint string) {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt)
-	signal.Notify(ch, syscall.SIGTERM)
-	go func() {
-		<-ch
-		err := srv.Unmount()
-		if err != nil {
-			tlog.Warn.Print(err)
-			tlog.Info.Printf("Trying lazy unmount")
-			cmd := exec.Command("fusermount", "-u", "-z", mountpoint)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			cmd.Run()
-		}
-		os.Exit(1)
-	}()
+	os.Exit(doMount(&args))
 }

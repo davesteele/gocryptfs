@@ -60,7 +60,7 @@ func TestLoadV2StrangeFeature(t *testing.T) {
 }
 
 func TestCreateConfFile(t *testing.T) {
-	err := CreateConfFile("config_test/tmp.conf", "test", false, 10, "test")
+	err := CreateConfFile("config_test/tmp.conf", "test", false, 10, "test", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,9 +71,23 @@ func TestCreateConfFile(t *testing.T) {
 
 }
 
+func TestCreateConfFileAESSIV(t *testing.T) {
+	err := CreateConfFile("config_test/tmp.conf", "test", false, 10, "test", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, c, err := LoadConfFile("config_test/tmp.conf", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.IsFeatureFlagSet(FlagAESSIV) {
+		t.Error("AESSIV flag should be set but is not")
+	}
+}
+
 func TestIsFeatureFlagKnown(t *testing.T) {
 	// Test a few hardcoded values
-	testKnownFlags := []string{"DirIV", "PlaintextNames", "EMENames", "GCMIV128", "LongNames"}
+	testKnownFlags := []string{"DirIV", "PlaintextNames", "EMENames", "GCMIV128", "LongNames", "AESSIV"}
 	// And also everything in knownFlags (yes, it is likely that we end up with
 	// some duplicates. Does not matter.)
 	for _, f := range knownFlags {
