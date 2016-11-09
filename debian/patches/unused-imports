@@ -1,0 +1,19 @@
+--- a/main.go
++++ b/main.go
+@@ -7,13 +7,13 @@
+ 	"path/filepath"
+ 	"runtime"
+ 	"runtime/pprof"
+-	"strconv"
+-	"time"
++//	"strconv"
++//	"time"
+ 
+ 	"github.com/rfjakob/gocryptfs/internal/configfile"
+ 	"github.com/rfjakob/gocryptfs/internal/contentenc"
+ 	"github.com/rfjakob/gocryptfs/internal/readpassword"
+-	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
++//	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
+ 	"github.com/rfjakob/gocryptfs/internal/tlog"
+ )
+ 
