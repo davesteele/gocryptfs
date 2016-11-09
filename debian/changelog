@@ -1,8 +1,9 @@
-gocryptfs (1.1.1-1) UNRELEASED; urgency=medium
+gocryptfs (1.1.1-1) unstable; urgency=medium
 
   * New upstream release.
+  * Add required build depends (Closes: 843674)
 
- -- David Steele <steele@debian.org>  Tue, 08 Nov 2016 18:56:22 -0500
+ -- David Steele <steele@debian.org>  Tue, 08 Nov 2016 23:03:10 -0500
 
 gocryptfs (1.0-2) unstable; urgency=medium
 
