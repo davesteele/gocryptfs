@@ -11,11 +11,8 @@ CHDATE = $(shell grep "\-\-" debian/changelog | head -1 | sed 's/.\+, //' | sed 
 DT = $(shell date -d "${CHDATE}" "+%Y-%m-%d")
 
 override_dh_auto_build:
-	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/matrix
-	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/normal
-	rm -rf obj-*/src/github.com/rfjakob/gocryptfs/tests/plaintextnames
-	dh_auto_build
-	cp -r internal/configfile/config_test obj-*/src/github.com/rfjakob/gocryptfs/internal/configfile
+	GOPATH=$(shell ls -d $(CURDIR)/obj*) go install -v  github.com/rfjakob/gocryptfs
+	GOPATH=$(shell ls -d $(CURDIR)/obj*) go test -v  github.com/rfjakob/gocryptfs
 	ronn --date=${DT} debian/*.ronn
 
 override_dh_auto_test:
