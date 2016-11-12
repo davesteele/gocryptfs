@@ -12,11 +12,14 @@ DT = $(shell date -d "${CHDATE}" "+%Y-%m-%d")
 
 override_dh_auto_build:
 	GOPATH=$(shell ls -d $(CURDIR)/obj*) go install -v  github.com/rfjakob/gocryptfs
-	GOPATH=$(shell ls -d $(CURDIR)/obj*) go test -v  github.com/rfjakob/gocryptfs
-	ronn --date=${DT} debian/*.ronn
+	pandoc Documentation/MANPAGE.md -s -t man -o debian/gocryptfs.1
 
 override_dh_auto_test:
+	GOPATH=$(shell ls -d $(CURDIR)/obj*) go test -v  github.com/rfjakob/gocryptfs
 
+override_dh_auto_clean:
+	rm -f debian/gocryptfs.1
+	dh_auto_clean
 
 get-orig-source:  $(info I: $(PKG)_$(VER))
 	@echo "# Downloading..."
