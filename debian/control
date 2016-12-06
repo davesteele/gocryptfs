@@ -5,7 +5,7 @@ Maintainer: Debian Go Packaging Team <pkg-go-maintainers@lists.alioth.debian.org
 Uploaders: David Steele <steele@debian.org>
 Build-Depends: debhelper (>= 9),
                dh-golang,
-               golang-go,
+               golang-any,
                golang-github-hanwen-go-fuse-dev,
                golang-github-jacobsa-crypto-dev,
                golang-github-rfjakob-eme-dev,
