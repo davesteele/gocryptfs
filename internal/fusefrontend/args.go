@@ -18,4 +18,9 @@ type Args struct {
 	// location. If it is false, reverse mode maps ".gocryptfs.reverse.conf"
 	// to "gocryptfs.conf" in the plaintext dir.
 	ConfigCustom bool
+	// Raw64 is true when RawURLEncoding (without padding) should be used for
+	// file names
+	Raw64 bool
+	// NoPrealloc disables automatic preallocation before writing
+	NoPrealloc bool
 }

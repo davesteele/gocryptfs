@@ -18,6 +18,7 @@ import (
 
 	"github.com/rfjakob/gocryptfs/internal/configfile"
 	"github.com/rfjakob/gocryptfs/internal/cryptocore"
+	"github.com/rfjakob/gocryptfs/internal/ctlsock"
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend"
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend_reverse"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
@@ -67,8 +68,9 @@ func doMount(args *argContainer) int {
 		masterkey, confFile = loadConfig(args)
 		printMasterKey(masterkey)
 	}
+	// We cannot use JSON for pretty-printing as the fields are unexported
+	tlog.Debug.Printf("cli args: %#v", args)
 	// Initialize FUSE server
-	tlog.Debug.Printf("cli args: %v", args)
 	srv := initFuseFrontend(masterkey, args, confFile)
 	tlog.Info.Println(tlog.ColorGreen + "Filesystem mounted and ready." + tlog.ColorReset)
 	// We have been forked into the background, as evidenced by the set
@@ -142,11 +144,14 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 		LongNames:      args.longnames,
 		CryptoBackend:  cryptoBackend,
 		ConfigCustom:   args._configCustom,
+		Raw64:          args.raw64,
+		NoPrealloc:     args.noprealloc,
 	}
 	// confFile is nil when "-zerokey" or "-masterkey" was used
 	if confFile != nil {
 		// Settings from the config file override command line args
 		frontendArgs.PlaintextNames = confFile.IsFeatureFlagSet(configfile.FlagPlaintextNames)
+		frontendArgs.Raw64 = confFile.IsFeatureFlagSet(configfile.FlagRaw64)
 		if confFile.IsFeatureFlagSet(configfile.FlagAESSIV) {
 			frontendArgs.CryptoBackend = cryptocore.BackendAESSIV
 		} else if args.reverse {
@@ -162,10 +167,18 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	jsonBytes, _ := json.MarshalIndent(frontendArgs, "", "\t")
 	tlog.Debug.Printf("frontendArgs: %s", string(jsonBytes))
 	var finalFs pathfs.FileSystem
+	var ctlSockBackend ctlsock.Interface
 	if args.reverse {
-		finalFs = fusefrontend_reverse.NewFS(frontendArgs)
+		fs := fusefrontend_reverse.NewFS(frontendArgs)
+		finalFs = fs
+		ctlSockBackend = fs
 	} else {
-		finalFs = fusefrontend.NewFS(frontendArgs)
+		fs := fusefrontend.NewFS(frontendArgs)
+		finalFs = fs
+		ctlSockBackend = fs
+	}
+	if args.ctlsock != "" {
+		ctlsock.CreateAndServe(args.ctlsock, ctlSockBackend)
 	}
 	pathFsOpts := &pathfs.PathNodeFsOptions{ClientInodes: true}
 	pathFs := pathfs.NewPathNodeFs(finalFs, pathFsOpts)
@@ -197,9 +210,8 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	if args.reverse {
 		mOpts.Name += "-reverse"
 	}
-
 	// The kernel enforces read-only operation, we just have to pass "ro".
-	// Reverse mounts are always read-only
+	// Reverse mounts are always read-only.
 	if args.ro || args.reverse {
 		mOpts.Options = append(mOpts.Options, "ro")
 	}

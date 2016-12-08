@@ -1,43 +1,63 @@
 package nametransform
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
-// A simple one-entry DirIV cache
+// Single-entry DirIV cache. Stores the directory IV and the encrypted
+// path.
 type dirIVCache struct {
-	// Invalidated?
-	cleared bool
-	// The DirIV
-	iv []byte
 	// Directory the DirIV belongs to
 	dir string
+	// Time the entry expires.
+	// The cached entry my become out-of-date if the ciphertext directory is
+	// modifed behind the back of gocryptfs. Having an expiry time limits the
+	// inconstency to one second, like attr_timeout does for the kernel
+	// getattr cache.
+	expiry time.Time
+
+	// The DirIV
+	iv []byte
 	// Ecrypted version of "dir"
-	translatedDir string
-	// Synchronisation
-	lock sync.RWMutex
+	cDir string
+
+	// Invalidated?
+	cleared bool
+	sync.RWMutex
 }
 
 // lookup - fetch entry for "dir" from the cache
-func (c *dirIVCache) lookup(dir string) (bool, []byte, string) {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
-	if !c.cleared && c.dir == dir {
-		return true, c.iv, c.translatedDir
+func (c *dirIVCache) lookup(dir string) ([]byte, string) {
+	c.RLock()
+	defer c.RUnlock()
+	if c.cleared || c.dir != dir {
+		return nil, ""
 	}
-	return false, nil, ""
+	if time.Since(c.expiry) > 0 {
+		c.cleared = true
+		return nil, ""
+	}
+	return c.iv, c.cDir
 }
 
-// store - write entry for "dir" into the caches
-func (c *dirIVCache) store(dir string, iv []byte, translatedDir string) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+// store - write entry for "dir" into the cache
+func (c *dirIVCache) store(dir string, iv []byte, cDir string) {
+	c.Lock()
+	defer c.Unlock()
 	c.cleared = false
 	c.iv = iv
 	c.dir = dir
-	c.translatedDir = translatedDir
+	c.cDir = cDir
+	// Set expiry time one second into the future
+	c.expiry = time.Now().Add(1 * time.Second)
 }
 
+// Clear ... clear the cache.
+// Exported because it is called from fusefrontend when directories are
+// renamed or deleted.
 func (c *dirIVCache) Clear() {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.Lock()
+	defer c.Unlock()
 	c.cleared = true
 }

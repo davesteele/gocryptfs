@@ -47,6 +47,13 @@ Options:
 **-cpuprofile string**
 :	Write cpu profile to specified file
 
+**-ctlsock string**
+:	Create a control socket at the specified location. The socket can be
+	used to decrypt and encrypt paths inside the filesystem. When using
+	this option, make sure that the direcory you place the socket in is
+	not world-accessible. For example, `/run/user/UID/my.socket` would 
+	be suitable.
+
 **-d, -debug**
 :	Enable debug output
 
@@ -56,8 +63,9 @@ Options:
 	stripped by gocryptfs. Using something like "cat /mypassword.txt" allows
 	to mount the gocryptfs filesytem without user interaction.
 
-**-f**
+**-fg, -f**
 :	Stay in the foreground instead of forking away. Implies "-nosyslog".
+	For compatability, "-f" is also accepted, but "-fg" is preferred.
 
 **-fusedebug**
 :	Enable fuse library debug output
@@ -98,6 +106,22 @@ Options:
 :	Allow mounting over non-empty directories. FUSE by default disallows
 	this to prevent accidential shadowing of files.
 
+**-noprealloc**
+:	Disable preallocation before writing. By default, gocryptfs
+	preallocates the space the next write will take using fallocate(2)
+	in mode FALLOC_FL_KEEP_SIZE. The preallocation makes sure it cannot
+	run out of space in the middle of the write, which would cause the
+	last 4kB block to be corrupt and unreadable.
+
+	On ext4, preallocation is fast and does not cause a
+	noticeable performance hit. Unfortunately, on Btrfs, preallocation
+	is very slow, especially on rotational HDDs. The "-noprealloc"
+	option gives users the choice to trade robustness against
+	out-of-space errors for a massive speedup.
+	
+	For benchmarks and more details of the issue see
+	https://github.com/rfjakob/gocryptfs/issues/63 .
+
 **-nosyslog**
 :	Diagnostic messages are normally redirected to syslog once gocryptfs
 	daemonizes. This option disables the redirection and messages will
@@ -106,6 +130,11 @@ Options:
 **-notifypid int**
 :	Send USR1 to the specified process after successful mount. This is
 	used internally for daemonization.
+
+**-o COMMA-SEPARATED-OPTIONS**
+:	For compatibility with mount(1), options are also accepted as
+	"-o COMMA-SEPARATED-OPTIONS" at the end of the command line.
+	For example, "-o q,zerokey" is equivalent to passing "-q -zerokey".
 
 **-openssl bool/"auto"**
 :	Use OpenSSL instead of built-in Go crypto (default "auto"). Using
@@ -135,6 +164,11 @@ Options:
 **-q, -quiet**
 :	Quiet - silence informational messages
 
+**-raw64**
+:	Use unpadded base64 encoding for file names. This gets rid of the
+	trailing "\\=\\=". A filesystem created with this option can only be
+	mounted using gocryptfs v1.2 and higher.
+
 **-reverse**
 :	Reverse mode shows a read-only encrypted view of a plaintext
 	directory. Implies "-aessiv".
@@ -149,9 +183,10 @@ Options:
 
 **-version**
 :	Print version and exit. The output contains three fields seperated by ";".
-	Example: "gocryptfs v0.12-2; go-fuse a4c968c; go1.6.2".
+	Example: "gocryptfs v1.1.1-5-g75b776c; go-fuse 6b801d3; 2016-11-01 go1.7.3".
 	Field 1 is the gocryptfs version, field 2 is the version of the go-fuse
-	library, field 3 is the Go version that was used to compile the binary.
+	library, field 3 is the compile date and the Go version that was
+	used.
 
 **-wpanic**
 :	When encountering a warning, panic and exit immediately. This is
@@ -161,24 +196,21 @@ Options:
 :	Use all-zero dummy master key. This options is only intended for
 	automated testing as it does not provide any security.
 
-
-Comma-Separated-Options:
-
-For compatibility with mount(1), options are also accepted as
-"-o COMMA-SEPARATED-OPTIONS" at the end of the command line.
-For example, "-o q,zerokey" is equivalent to "-q -zerokey".
-
 EXAMPLES
 ========
 
-Create and mount an encrypted filesystem:
+Create an encrypted filesystem in directory "g1" and mount it on "g2":
 
-mkdir /tmp/g1 /tmp/g2
+	mkdir g1 g2
+	gocryptfs -init g1
+	gocryptfs g1 g2
 
-gocryptfs -init /tmp/g1  
-gocryptfs /tmp/g1 /tmp/g2
+Mount an ecrypted view of joe's home directory using reverse mode:
 
+	mkdir /home/joe.crypt
+	gocryptfs -init -reverse /home/joe
+	gocryptfs -reverse /home/joe /home/joe.crypt
 
 SEE ALSO
 ========
-fuse(8)
+fuse(8) fallocate(2)

@@ -3,15 +3,19 @@ package test_helpers
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/rfjakob/gocryptfs/internal/ctlsock"
 	"github.com/rfjakob/gocryptfs/internal/nametransform"
 )
 
@@ -120,8 +124,8 @@ func InitFS(t *testing.T, extraArgs ...string) string {
 // Creates "p" if it does not exist.
 func Mount(c string, p string, showOutput bool, extraArgs ...string) error {
 	var args []string
-	args = append(args, extraArgs...)
 	args = append(args, "-q", "-wpanic", "-nosyslog")
+	args = append(args, extraArgs...)
 	//args = append(args, "-fusedebug")
 	//args = append(args, "-d")
 	args = append(args, c)
@@ -223,20 +227,23 @@ func TestMkdirRmdir(t *testing.T, plainDir string) {
 	dir := plainDir + "/dir1"
 	err := os.Mkdir(dir, 0777)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	err = syscall.Rmdir(dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
-
 	// Removing a non-empty dir should fail with ENOTEMPTY
 	if os.Mkdir(dir, 0777) != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	f, err := os.Create(dir + "/file")
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	f.Close()
 	err = syscall.Rmdir(dir)
@@ -245,23 +252,26 @@ func TestMkdirRmdir(t *testing.T, plainDir string) {
 		t.Errorf("Should have gotten ENOTEMPTY, go %v", errno)
 	}
 	if syscall.Unlink(dir+"/file") != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	if syscall.Rmdir(dir) != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
-
 	// We should also be able to remove a directory we do not have permissions to
 	// read or write
 	err = os.Mkdir(dir, 0000)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	err = syscall.Rmdir(dir)
 	if err != nil {
 		// Make sure the directory can cleaned up by the next test run
 		os.Chmod(dir, 0700)
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 }
 
@@ -271,11 +281,13 @@ func TestRename(t *testing.T, plainDir string) {
 	file2 := plainDir + "/rename2"
 	err := ioutil.WriteFile(file1, []byte("content"), 0777)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	err = syscall.Rename(file1, file2)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	syscall.Unlink(file2)
 }
@@ -322,4 +334,31 @@ func Du(t *testing.T, fd int) (nBytes int64) {
 	}
 	// st.Blocks = number of 512-byte blocks
 	return st.Blocks * 512
+}
+
+// QueryCtlSock sends a request to the control socket at "socketPath" and
+// returns the response.
+func QueryCtlSock(t *testing.T, socketPath string, req ctlsock.RequestStruct) (response ctlsock.ResponseStruct) {
+	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(time.Second))
+	msg, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Write(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2*syscall.PathMax)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf = buf[:n]
+	json.Unmarshal(buf, &response)
+	return response
 }

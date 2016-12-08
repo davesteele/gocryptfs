@@ -11,6 +11,7 @@ import (
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 
 	"github.com/rfjakob/gocryptfs/internal/nametransform"
+	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
 const (
@@ -39,7 +40,7 @@ func initLongnameCache() {
 }
 
 // findLongnameParent converts "gocryptfs.longname.XYZ" to the plaintext name
-func (rfs *reverseFS) findLongnameParent(dir string, dirIV []byte, longname string) (plaintextName string, err error) {
+func (rfs *ReverseFS) findLongnameParent(dir string, dirIV []byte, longname string) (plaintextName string, err error) {
 	longnameCacheLock.Lock()
 	hit := longnameParentCache[longname]
 	longnameCacheLock.Unlock()
@@ -49,6 +50,7 @@ func (rfs *reverseFS) findLongnameParent(dir string, dirIV []byte, longname stri
 	absDir := filepath.Join(rfs.args.Cipherdir, dir)
 	dirfd, err := os.Open(absDir)
 	if err != nil {
+		tlog.Warn.Printf("findLongnameParent: opendir failed: %v\n", err)
 		return "", err
 	}
 	dirEntries, err := dirfd.Readdirnames(-1)
@@ -78,7 +80,7 @@ func (rfs *reverseFS) findLongnameParent(dir string, dirIV []byte, longname stri
 	return hit, nil
 }
 
-func (rfs *reverseFS) newNameFile(relPath string) (nodefs.File, fuse.Status) {
+func (rfs *ReverseFS) newNameFile(relPath string) (nodefs.File, fuse.Status) {
 	dotName := filepath.Base(relPath)                                    // gocryptfs.longname.XYZ.name
 	longname := dotName[:len(dotName)-len(nametransform.LongNameSuffix)] // gocryptfs.longname.XYZ
 
@@ -94,5 +96,5 @@ func (rfs *reverseFS) newNameFile(relPath string) (nodefs.File, fuse.Status) {
 	}
 	content := []byte(rfs.nameTransform.EncryptName(e, dirIV))
 	parentFile := filepath.Join(rfs.args.Cipherdir, pDir)
-	return rfs.NewVirtualFile(content, parentFile)
+	return rfs.newVirtualFile(content, parentFile)
 }

@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/rfjakob/gocryptfs/internal/nametransform"
+	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
 // saneDir is like filepath.Dir but returns "" instead of "."
@@ -36,14 +37,14 @@ func derivePathIV(path string, purpose ivPurposeType) []byte {
 	return hash[:nametransform.DirIVLen]
 }
 
-func (rfs *reverseFS) abs(relPath string, err error) (string, error) {
+func (rfs *ReverseFS) abs(relPath string, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(rfs.args.Cipherdir, relPath), nil
 }
 
-func (rfs *reverseFS) decryptPath(relPath string) (string, error) {
+func (rfs *ReverseFS) decryptPath(relPath string) (string, error) {
 	if rfs.args.PlaintextNames || relPath == "" {
 		return relPath, nil
 	}
@@ -52,9 +53,9 @@ func (rfs *reverseFS) decryptPath(relPath string) (string, error) {
 	parts := strings.Split(relPath, "/")
 	for i, part := range parts {
 		// Start at the top and recurse
-		currentDir := filepath.Join(parts[:i]...)
+		currentCipherDir := filepath.Join(parts[:i]...)
 		nameType := nametransform.NameType(part)
-		dirIV := derivePathIV(currentDir, ivPurposeDirIV)
+		dirIV := derivePathIV(currentCipherDir, ivPurposeDirIV)
 		var transformedPart string
 		if nameType == nametransform.LongNameNone {
 			transformedPart, err = rfs.nameTransform.DecryptName(part, dirIV)
@@ -74,12 +75,15 @@ func (rfs *reverseFS) decryptPath(relPath string) (string, error) {
 				return "", err
 			}
 		} else if nameType == nametransform.LongNameContent {
-			transformedPart, err = rfs.findLongnameParent(currentDir, dirIV, part)
+			currentPlainDir := filepath.Join(transformedParts[:i]...)
+			transformedPart, err = rfs.findLongnameParent(currentPlainDir, dirIV, part)
 			if err != nil {
 				return "", err
 			}
 		} else {
-			panic("longname bug, .name files should have been handled earlier")
+			// It makes no sense to decrypt a ".name" file
+			tlog.Warn.Printf("decryptPath: tried to decrypt %q!? Returning EINVAL.", part)
+			return "", syscall.EINVAL
 		}
 		transformedParts = append(transformedParts, transformedPart)
 	}

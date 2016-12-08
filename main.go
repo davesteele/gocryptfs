@@ -124,9 +124,9 @@ func main() {
 	// Parse all command-line options (i.e. arguments starting with "-")
 	// into "args". Path arguments are parsed below.
 	args := parseCliOpts()
-	// Fork a child into the background if "-f" is not set AND we are mounting
+	// Fork a child into the background if "-fg" is not set AND we are mounting
 	// a filesystem. The child will do all the work.
-	if !args.foreground && flagSet.NArg() == 2 {
+	if !args.fg && flagSet.NArg() == 2 {
 		ret := forkChild()
 		os.Exit(ret)
 	}
@@ -239,5 +239,10 @@ func main() {
 		tlog.Fatal.Printf("Usage: %s [OPTIONS] CIPHERDIR MOUNTPOINT [-o COMMA-SEPARATED-OPTIONS]", tlog.ProgramName)
 		os.Exit(ErrExitUsage)
 	}
-	os.Exit(doMount(&args))
+	ret := doMount(&args)
+	if ret != 0 {
+		os.Exit(ret)
+	}
+	// Don't call os.Exit on success to give deferred functions a chance to
+	// run
 }

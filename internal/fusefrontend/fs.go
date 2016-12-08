@@ -42,7 +42,7 @@ var _ pathfs.FileSystem = &FS{} // Verify that interface is implemented.
 func NewFS(args Args) *FS {
 	cryptoCore := cryptocore.New(args.Masterkey, args.CryptoBackend, contentenc.DefaultIVBits)
 	contentEnc := contentenc.New(cryptoCore, contentenc.DefaultBS)
-	nameTransform := nametransform.New(cryptoCore, args.LongNames)
+	nameTransform := nametransform.New(cryptoCore, args.LongNames, args.Raw64)
 
 	return &FS{
 		FileSystem:    pathfs.NewLoopbackFileSystem(args.Cipherdir),
@@ -106,7 +106,7 @@ func (fs *FS) Open(path string, flags uint32, context *fuse.Context) (fuseFile n
 		return nil, fuse.ToStatus(err)
 	}
 
-	return NewFile(f, writeOnly, fs.contentEnc)
+	return NewFile(f, writeOnly, fs)
 }
 
 // Create implements pathfs.Filesystem.
@@ -157,10 +157,10 @@ func (fs *FS) Create(path string, flags uint32, mode uint32, context *fuse.Conte
 	if fs.args.PreserveOwner {
 		err = fd.Chown(int(context.Owner.Uid), int(context.Owner.Gid))
 		if err != nil {
-			tlog.Warn.Printf("Create: Chown failed: %v", err)
+			tlog.Warn.Printf("Create: fd.Chown failed: %v", err)
 		}
 	}
-	return NewFile(fd, writeOnly, fs.contentEnc)
+	return NewFile(fd, writeOnly, fs)
 }
 
 // Chmod implements pathfs.Filesystem.
@@ -195,36 +195,43 @@ func (fs *FS) Mknod(path string, mode uint32, dev uint32, context *fuse.Context)
 	if fs.isFiltered(path) {
 		return fuse.EPERM
 	}
-	cPath, err := fs.encryptPath(path)
+	cPath, err := fs.getBackingPath(path)
 	if err != nil {
 		return fuse.ToStatus(err)
 	}
-
-	// Handle long file name
+	// Create ".name" file to store long file name
 	cName := filepath.Base(cPath)
 	if nametransform.IsLongContent(cName) {
-		dirfd, err := os.Open(filepath.Dir(cPath))
+		var dirfd *os.File
+		dirfd, err = os.Open(filepath.Dir(cPath))
 		if err != nil {
 			return fuse.ToStatus(err)
 		}
 		defer dirfd.Close()
-
-		// Create ".name"
 		err = fs.nameTransform.WriteLongName(dirfd, cName, path)
 		if err != nil {
 			return fuse.ToStatus(err)
 		}
-
-		// Create device node
-		err = syscallcompat.Mknodat(int(dirfd.Fd()), cName, uint32(mode), int(dev))
+		// Create "gocryptfs.longfile." device node
+		err = syscallcompat.Mknodat(int(dirfd.Fd()), cName, mode, int(dev))
 		if err != nil {
 			nametransform.DeleteLongName(dirfd, cName)
 		}
-
+	} else {
+		// Create regular device node
+		err = syscall.Mknod(cPath, mode, int(dev))
+	}
+	if err != nil {
 		return fuse.ToStatus(err)
 	}
-
-	return fs.FileSystem.Mknod(cPath, mode, dev, context)
+	// Set owner
+	if fs.args.PreserveOwner {
+		err = os.Lchown(cPath, int(context.Owner.Uid), int(context.Owner.Gid))
+		if err != nil {
+			tlog.Warn.Printf("Mknod: Lchown failed: %v", err)
+		}
+	}
+	return fuse.OK
 }
 
 // Truncate implements pathfs.Filesystem.
@@ -344,7 +351,6 @@ func (fs *FS) Symlink(target string, linkName string, context *fuse.Context) (co
 	// Symlinks are encrypted like file contents (GCM) and base64-encoded
 	cBinTarget := fs.contentEnc.EncryptBlock([]byte(target), 0, nil)
 	cTarget := base64.URLEncoding.EncodeToString(cBinTarget)
-
 	// Handle long file name
 	cName := filepath.Base(cPath)
 	if nametransform.IsLongContent(cName) {
@@ -354,25 +360,32 @@ func (fs *FS) Symlink(target string, linkName string, context *fuse.Context) (co
 			return fuse.ToStatus(err)
 		}
 		defer dirfd.Close()
-
-		// Create ".name"
+		// Create ".name" file
 		err = fs.nameTransform.WriteLongName(dirfd, cName, linkName)
 		if err != nil {
 			return fuse.ToStatus(err)
 		}
-
-		// Create symlink
+		// Create "gocryptfs.longfile." symlink
 		// TODO use syscall.Symlinkat once it is available in Go
 		err = syscall.Symlink(cTarget, cPath)
 		if err != nil {
 			nametransform.DeleteLongName(dirfd, cName)
 		}
-
+	} else {
+		// Create symlink
+		err = os.Symlink(cTarget, cPath)
+	}
+	if err != nil {
 		return fuse.ToStatus(err)
 	}
-
-	err = os.Symlink(cTarget, cPath)
-	return fuse.ToStatus(err)
+	// Set owner
+	if fs.args.PreserveOwner {
+		err = os.Lchown(cPath, int(context.Owner.Uid), int(context.Owner.Gid))
+		if err != nil {
+			tlog.Warn.Printf("Mknod: Lchown failed: %v", err)
+		}
+	}
+	return fuse.OK
 }
 
 // Rename implements pathfs.Filesystem.

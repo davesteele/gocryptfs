@@ -1,6 +1,7 @@
 package nametransform
 
 import (
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -52,13 +53,13 @@ func fdReadDirIV(fd *os.File) (iv []byte, err error) {
 	// make the buffer 1 byte bigger than necessary.
 	iv = make([]byte, DirIVLen+1)
 	n, err := fd.Read(iv)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		tlog.Warn.Printf("ReadDirIVAt: Read failed: %v", err)
 		return nil, err
 	}
 	iv = iv[0:n]
 	if len(iv) != DirIVLen {
-		tlog.Warn.Printf("ReadDirIVAt: wanted %d bytes, got %d", DirIVLen, len(iv))
+		tlog.Warn.Printf("ReadDirIVAt: wanted %d bytes, got %d. Returning EINVAL.", DirIVLen, len(iv))
 		return nil, syscall.EINVAL
 	}
 	return iv, nil
@@ -92,13 +93,13 @@ func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (cip
 	}
 	// Check if the DirIV is cached
 	parentDir := filepath.Dir(plainPath)
-	found, iv, cParentDir := be.DirIVCache.lookup(parentDir)
-	if found {
+	iv, cParentDir := be.DirIVCache.lookup(parentDir)
+	if iv != nil {
 		cBaseName := be.EncryptName(baseName, iv)
 		if be.longNames && len(cBaseName) > syscall.NAME_MAX {
 			cBaseName = HashLongName(cBaseName)
 		}
-		cipherPath = cParentDir + "/" + cBaseName
+		cipherPath = filepath.Join(cParentDir, cBaseName)
 		return cipherPath, nil
 	}
 	// Not cached - walk the directory tree
@@ -117,7 +118,7 @@ func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (cip
 		encryptedNames = append(encryptedNames, encryptedName)
 		wd = filepath.Join(wd, encryptedName)
 	}
-	cipherPath = strings.Join(encryptedNames, "/")
+	cipherPath = filepath.Join(encryptedNames...)
 	// Cache the final DirIV
 	cParentDir = filepath.Dir(cipherPath)
 	be.DirIVCache.store(parentDir, iv, cParentDir)

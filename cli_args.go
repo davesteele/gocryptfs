@@ -14,11 +14,12 @@ import (
 
 // argContainer stores the parsed CLI options and arguments
 type argContainer struct {
-	debug, init, zerokey, fusedebug, openssl, passwd, foreground, version,
+	debug, init, zerokey, fusedebug, openssl, passwd, fg, version,
 	plaintextnames, quiet, nosyslog, wpanic,
-	longnames, allow_other, ro, reverse, aessiv, nonempty bool
+	longnames, allow_other, ro, reverse, aessiv, nonempty, raw64,
+	noprealloc bool
 	masterkey, mountpoint, cipherdir, cpuprofile, extpass,
-	memprofile, ko, passfile string
+	memprofile, ko, passfile, ctlsock string
 	// Configuration file name override
 	config             string
 	notifypid, scryptn int
@@ -89,7 +90,8 @@ func parseCliOpts() (args argContainer) {
 	// Tri-state true/false/auto
 	flagSet.StringVar(&opensslAuto, "openssl", "auto", "Use OpenSSL instead of built-in Go crypto")
 	flagSet.BoolVar(&args.passwd, "passwd", false, "Change password")
-	flagSet.BoolVar(&args.foreground, "f", false, "Stay in the foreground")
+	flagSet.BoolVar(&args.fg, "f", false, "")
+	flagSet.BoolVar(&args.fg, "fg", false, "Stay in the foreground")
 	flagSet.BoolVar(&args.version, "version", false, "Print version and exit")
 	flagSet.BoolVar(&args.plaintextnames, "plaintextnames", false, "Do not encrypt file names")
 	flagSet.BoolVar(&args.quiet, "q", false, "")
@@ -103,6 +105,8 @@ func parseCliOpts() (args argContainer) {
 	flagSet.BoolVar(&args.reverse, "reverse", false, "Reverse mode")
 	flagSet.BoolVar(&args.aessiv, "aessiv", false, "AES-SIV encryption")
 	flagSet.BoolVar(&args.nonempty, "nonempty", false, "Allow mounting over non-empty directories")
+	flagSet.BoolVar(&args.raw64, "raw64", false, "Use unpadded base64 for file names")
+	flagSet.BoolVar(&args.noprealloc, "noprealloc", false, "Disable preallocation before writing")
 	flagSet.StringVar(&args.masterkey, "masterkey", "", "Mount with explicit master key")
 	flagSet.StringVar(&args.cpuprofile, "cpuprofile", "", "Write cpu profile to specified file")
 	flagSet.StringVar(&args.memprofile, "memprofile", "", "Write memory profile to specified file")
@@ -110,10 +114,11 @@ func parseCliOpts() (args argContainer) {
 	flagSet.StringVar(&args.extpass, "extpass", "", "Use external program for the password prompt")
 	flagSet.StringVar(&args.passfile, "passfile", "", "Read password from file")
 	flagSet.StringVar(&args.ko, "ko", "", "Pass additional options directly to the kernel, comma-separated list")
+	flagSet.StringVar(&args.ctlsock, "ctlsock", "", "Create control socket at specified path")
 	flagSet.IntVar(&args.notifypid, "notifypid", 0, "Send USR1 to the specified process after "+
 		"successful mount - used internally for daemonization")
 	flagSet.IntVar(&args.scryptn, "scryptn", configfile.ScryptDefaultLogN, "scrypt cost parameter logN. "+
-		"Setting this to a lower value speeds up mounting but makes the password susceptible to brute-force attacks")
+		"A lower value speeds up mounting but makes the password susceptible to brute-force attacks")
 	// Ignored otions
 	var dummyBool bool
 	ignoreText := "(ignored for compatibility)"
