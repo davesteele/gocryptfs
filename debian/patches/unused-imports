@@ -1,6 +1,17 @@
+From: David Steele <steele@debian.org>
+Date: Fri, 30 Dec 2016 20:02:21 -0500
+Subject: Remove unused imports
+
+Fixes compiler complaints.
+---
+ main.go | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/main.go b/main.go
+index b50647c..dcbecd6 100644
 --- a/main.go
 +++ b/main.go
-@@ -7,13 +7,13 @@
+@@ -7,13 +7,13 @@ import (
  	"path/filepath"
  	"runtime"
  	"runtime/pprof"

@@ -1,6 +1,20 @@
+From: David Steele <steele@debian.org>
+Date: Fri, 30 Dec 2016 20:02:22 -0500
+Subject: Change dup2 to dup3
+
+The arm64 architecture has no Syscal.Dup2, for some reason. Replace
+it with Dup3.
+
+https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=843786
+---
+ mount.go | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mount.go b/mount.go
+index 29d34b8..dd622d5 100644
 --- a/mount.go
 +++ b/mount.go
-@@ -96,8 +96,8 @@
+@@ -98,8 +98,8 @@ func doMount(args *argContainer) int {
  			// instead of closing them so users have a chance to get the
  			// backtrace on a panic.
  			// https://github.com/golang/go/issues/325#issuecomment-66049178

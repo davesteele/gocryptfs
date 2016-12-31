@@ -1,16 +1,18 @@
-From: Debian Go Packaging Team <pkg-go-maintainers@lists.alioth.debian.org>
+From: David Steele <steele@debian.org>
 Date: Fri, 30 Sep 2016 21:21:35 -0400
 Subject: Fix the help message
 
 The help message had some escapes normally filled in by the bash build
 script. Remove them.
 ---
- main.go | 10 ++--------
- 1 file changed, 2 insertions(+), 8 deletions(-)
+ main.go | 14 ++------------
+ 1 file changed, 2 insertions(+), 12 deletions(-)
 
+diff --git a/main.go b/main.go
+index 8ab180e..b50647c 100644
 --- a/main.go
 +++ b/main.go
-@@ -104,18 +104,8 @@
+@@ -104,18 +104,8 @@ func changePassword(args *argContainer) {
  // printVersion prints a version string like this:
  // gocryptfs v0.12-36-ge021b9d-dirty; go-fuse a4c968c; 2016-07-03 go1.6.2
  func printVersion() {

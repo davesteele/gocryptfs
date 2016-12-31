@@ -1,13 +1,14 @@
-From: Debian Go Packaging Team <pkg-go-maintainers@lists.alioth.debian.org>
+From: David Steele <steele@debian.org>
 Date: Fri, 30 Sep 2016 21:21:35 -0400
 Subject: Fix a missing import in a test
 
+Fix a compile time error in test.
 ---
  tests/example_filesystems/example_test_helpers.go | 1 +
  1 file changed, 1 insertion(+)
 
 diff --git a/tests/example_filesystems/example_test_helpers.go b/tests/example_filesystems/example_test_helpers.go
-index e4c03ad..353a00f 100644
+index d89b35f..9ab3aa8 100644
 --- a/tests/example_filesystems/example_test_helpers.go
 +++ b/tests/example_filesystems/example_test_helpers.go
 @@ -7,6 +7,7 @@ import (
