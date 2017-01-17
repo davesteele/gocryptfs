@@ -1,3 +1,9 @@
+gocryptfs (1.2-2) UNRELEASED; urgency=medium
+
+  * Remove -dev dependencies from binary (Closes: 850473).
+
+ -- David Steele <steele@debian.org>  Tue, 17 Jan 2017 18:56:06 -0500
+
 gocryptfs (1.2-1) unstable; urgency=medium
 
   * New upstream version.
