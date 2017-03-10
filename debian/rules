@@ -21,6 +21,13 @@ override_dh_auto_clean:
 override_dh_auto_test:
 	cp -r internal/* obj*/src/github.com/rfjakob/gocryptfs/internal/
 	cp -r tests/* obj*/src/github.com/rfjakob/gocryptfs/tests
+	rm -rf obj*/src/github.com/rfjakob/gocryptfs/tests/cli
+	rm -rf obj*/src/github.com/rfjakob/gocryptfs/tests/example_filesystems
+	rm -rf obj*/src/github.com/rfjakob/gocryptfs/tests/defaults
+	rm -rf obj*/src/github.com/rfjakob/gocryptfs/tests/matrix
+	rm -rf obj*/src/github.com/rfjakob/gocryptfs/tests/plaintextnames
+	rm -rf obj*/src/github.com/rfjakob/gocryptfs/tests/reverse
+	rm -rf obj*/src/github.com/rfjakob/gocryptfs/tests/example_filesystems
 	cp obj*/bin/gocryptfs obj*/src/github.com/rfjakob/gocryptfs/
 	dh_auto_test
 	rm -f obj*/src/github.com/rfjakob/gocryptfs/gocryptfs
