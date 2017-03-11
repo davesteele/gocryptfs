@@ -64,20 +64,40 @@ as well as in the go-fuse library.
 Compile
 -------
 
-	$ go get github.com/rfjakob/gocryptfs
+	$ go get -d github.com/rfjakob/gocryptfs
+	$ cd $(go env GOPATH)/src/github.com/rfjakob/gocryptfs
+	$ ./build.bash
+
+Or, if you don't have OpenSSL installed:
+
+	$ ./build-without-openssl.bash
 
 Use
 ---
 
 	$ mkdir cipher plain
-	$ $GOPATH/bin/gocryptfs -init cipher
-	$ $GOPATH/bin/gocryptfs cipher plain
+	$ ./gocryptfs -init cipher
+	$ ./gocryptfs cipher plain
 
 See the [Quickstart](https://nuetzlich.net/gocryptfs/quickstart/) page for more info.
 
-The [MANPAGE.md](Documentation/MANPAGE.md) containes a description of available command-line options.
-If you already have gocryptfs installed, run `./MANPAGE-render.bash` to bring up the rendered manpage in
-your man pager (requires pandoc).
+The [MANPAGE.md](Documentation/MANPAGE.md) describes all available command-line options.
+
+Graphical Interface
+-------------------
+
+The [SiriKali](https://mhogomchungu.github.io/sirikali/) project supports
+gocryptfs and runs on Linux and OSX.
+
+[cppcryptfs](https://github.com/bailey27/cppcryptfs) on Windows provides
+its own GUI.
+
+Stable CLI ABI
+--------------
+
+If you want to call gocryptfs from your app or script, see
+[CLI_ABI.md](Documentation/CLI_ABI.md) for the official stable
+ABI. This ABI is regression-tested by the test suite.
 
 Storage Overhead
 ----------------
@@ -117,6 +137,13 @@ RM:    4.42
 
 Changelog
 ---------
+
+v1.2.1, 2016-02-26
+* Add an integrated speed test, `gocryptfs -speed`
+* Limit password size to 1000 bytes and reject trailing garbage after the newline
+* Make the test suite work on [Mac OS X](https://github.com/rfjakob/gocryptfs/issues/15)
+* Handle additional corner cases in `-ctlsock` path sanitization
+* Use dedicated exit code 12 on "password incorrect"
 
 v1.2, 2016-12-04
 * Add a control socket interface. Allows to encrypt and decrypt filenames.

@@ -14,12 +14,20 @@
 
 set -eu
 
+cd "$(dirname "$0")"
+MYNAME=$(basename $0)
+source ../fuse-unmount.bash
+
 # Backing directory
 DIR=$(mktemp -d /tmp/fsstress.XXX)
 # Mountpoint
 MNT="$DIR.mnt"
+
+# Set the GOPATH variable to the default if it is empty
+GOPATH=$(go env GOPATH)
+
 # fsstress binary
-FSSTRESS=~/src/xfstests/ltp/fsstress
+FSSTRESS=$GOPATH/src/xfstests/ltp/fsstress
 
 if [ ! -x $FSSTRESS ]
 then
@@ -28,13 +36,14 @@ then
 fi
 
 # Setup
-fusermount -u -z $MNT &> /dev/null || true
+fuse-unmount -z $MNT &> /dev/null || true
 mkdir -p $DIR $MNT
 rm -Rf $DIR/*
 rm -Rf $MNT/*
 
+
+
 # FS-specific compile and mount
-MYNAME=$(basename $0)
 if [ $MYNAME = fsstress-loopback.bash ]; then
 	echo "Recompile go-fuse loopback"
 	cd $GOPATH/src/github.com/hanwen/go-fuse/example/loopback
@@ -62,7 +71,7 @@ done
 echo
 
 # Cleanup trap
-trap "kill %1 ; cd /; fusermount -u -z $MNT; rm -rf $DIR $MNT" EXIT
+trap "kill %1 ; cd /; fuse-unmount -z $MNT; rm -rf $DIR $MNT" EXIT
 
 echo "Starting fsstress loop"
 N=1

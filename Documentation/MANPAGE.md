@@ -67,6 +67,11 @@ Options:
 :	Stay in the foreground instead of forking away. Implies "-nosyslog".
 	For compatability, "-f" is also accepted, but "-fg" is preferred.
 
+**-fsname string**
+:	Override the filesystem name (first column in df -T). Can also be
+	passed as "-o fsname=" and is equivalent to libfuse's option of the
+	same name. By default, CIPHERDIR is used.
+
 **-fusedebug**
 :	Enable fuse library debug output
 
@@ -144,7 +149,7 @@ Options:
 
 **-passfile string**
 :	Read password from the specified file. This is a shortcut for
-	specifying "-extpass /bin/cat FILE".
+	specifying '-extpass="/bin/cat -- FILE"'.
 
 **-passwd**
 :	Change the password. Will ask for the old password, check if it is
@@ -181,6 +186,11 @@ Options:
 	mounting but makes the password susceptible to brute-force attacks
 	(default 16)
 
+**-speed**
+:	Run crypto speed test. Benchmark Go's built-in GCM against OpenSSL
+	(if available). The library that will be selected on "-openssl=auto"
+	(the default) is marked as such.
+
 **-version**
 :	Print version and exit. The output contains three fields seperated by ";".
 	Example: "gocryptfs v1.1.1-5-g75b776c; go-fuse 6b801d3; 2016-11-01 go1.7.3".
@@ -196,6 +206,10 @@ Options:
 :	Use all-zero dummy master key. This options is only intended for
 	automated testing as it does not provide any security.
 
+**--**
+:	Stop option parsing. Helpful when CIPHERDIR may start with a
+	dash "-".
+
 EXAMPLES
 ========
 
@@ -210,6 +224,13 @@ Mount an ecrypted view of joe's home directory using reverse mode:
 	mkdir /home/joe.crypt
 	gocryptfs -init -reverse /home/joe
 	gocryptfs -reverse /home/joe /home/joe.crypt
+
+EXIT CODES
+==========
+
+0: success  
+12: password incorrect  
+other: please check the error message
 
 SEE ALSO
 ========

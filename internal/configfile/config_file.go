@@ -9,6 +9,7 @@ import (
 
 	"github.com/rfjakob/gocryptfs/internal/contentenc"
 	"github.com/rfjakob/gocryptfs/internal/cryptocore"
+	"github.com/rfjakob/gocryptfs/internal/exitcodes"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 import "os"
@@ -83,9 +84,11 @@ func CreateConfFile(filename string, password string, plaintextNames bool, logN 
 }
 
 // LoadConfFile - read config file from disk and decrypt the
-// contained key using password.
-//
+// contained key using "password".
 // Returns the decrypted key and the ConfFile object
+//
+// If "password" is empty, the config file is read
+// but the key is not decrypted (returns nil in its place).
 func LoadConfFile(filename string, password string) ([]byte, *ConfFile, error) {
 	var cf ConfFile
 	cf.filename = filename
@@ -161,7 +164,7 @@ func LoadConfFile(filename string, password string) ([]byte, *ConfFile, error) {
 	tlog.Warn.Enabled = true
 	if err != nil {
 		tlog.Warn.Printf("failed to unlock master key: %s", err.Error())
-		return nil, nil, fmt.Errorf("Password incorrect.")
+		return nil, nil, exitcodes.NewErr("Password incorrect.", exitcodes.PasswordIncorrect)
 	}
 
 	return key, &cf, err

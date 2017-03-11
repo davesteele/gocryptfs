@@ -531,7 +531,7 @@ func TestDirOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = os.Rename(dir1, dir2)
+	err = syscall.Rename(dir1, dir2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,6 +618,23 @@ func TestLongNames(t *testing.T) {
 	cnt2 := len(fi)
 	if cnt1 != cnt2 {
 		t.Errorf("Leftover files, cnt1=%d cnt2=%d", cnt1, cnt2)
+	}
+}
+
+// Create hard link with long name.
+// This was broken up to v1.2.
+func TestLongLink(t *testing.T) {
+	wd := test_helpers.DefaultPlainDir + "/"
+	target := wd + "TestLongLink.target"
+	f, err := os.Create(target)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	f.Close()
+	l255 := string(bytes.Repeat([]byte("l"), 255))
+	err = os.Link(target, wd+l255)
+	if err != nil {
+		t.Error(err)
 	}
 }
 
@@ -708,7 +725,7 @@ func doTestUtimesNano(t *testing.T, path string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = compareUtimes(tc.out, [2]syscall.Timespec{st.Atim, st.Mtim})
+		err = compareUtimes(tc.out, extractAtimeMtime(st))
 		if err != nil {
 			t.Errorf("Testcase %d: %v", i, err)
 		}

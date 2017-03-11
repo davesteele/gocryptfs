@@ -3,9 +3,8 @@
 package stupidgcm
 
 import (
+	"fmt"
 	"os"
-
-	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
 type stupidGCM struct{}
@@ -16,33 +15,32 @@ const (
 )
 
 func errExit() {
-	tlog.Fatal.Println("gocryptfs has been compiled without openssl support but you are still trying to use openssl")
+	fmt.Fprintln(os.Stderr, "gocryptfs has been compiled without openssl support but you are still trying to use openssl")
 	os.Exit(2)
 }
 
 func New(_ []byte) stupidGCM {
 	errExit()
-	// This panic is never reached, but having it here stops the Go compiler
-	// from complaining about the missing return code.
-	panic("")
+	// Never reached
+	return stupidGCM{}
 }
 
 func (g stupidGCM) NonceSize() int {
 	errExit()
-	panic("")
+	return -1
 }
 
 func (g stupidGCM) Overhead() int {
 	errExit()
-	panic("")
+	return -1
 }
 
 func (g stupidGCM) Seal(_, _, _, _ []byte) []byte {
 	errExit()
-	panic("")
+	return nil
 }
 
 func (g stupidGCM) Open(_, _, _, _ []byte) ([]byte, error) {
 	errExit()
-	panic("")
+	return nil, nil
 }

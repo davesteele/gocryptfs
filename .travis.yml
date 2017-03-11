@@ -1,5 +1,8 @@
 language: go
 
+git:
+  depth: 100
+
 # Build with the lastest versions of Go 1.4, 1.5, 1.6, 1.7
 # See https://golang.org/dl/
 go:
@@ -7,6 +10,7 @@ go:
   - 1.5.4
   - 1.6.3
   - 1.7.1
+  - 1.8
 
 install:
   - go get .
@@ -16,6 +20,7 @@ script:
   - go build
   - ./build-without-openssl.bash
   - ./build.bash
+  - ./gocryptfs -speed
   - ./test.bash
 
 # fuse on travis

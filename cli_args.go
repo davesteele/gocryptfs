@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -17,15 +18,17 @@ type argContainer struct {
 	debug, init, zerokey, fusedebug, openssl, passwd, fg, version,
 	plaintextnames, quiet, nosyslog, wpanic,
 	longnames, allow_other, ro, reverse, aessiv, nonempty, raw64,
-	noprealloc bool
+	noprealloc, speed bool
 	masterkey, mountpoint, cipherdir, cpuprofile, extpass,
-	memprofile, ko, passfile, ctlsock string
+	memprofile, ko, passfile, ctlsock, fsname string
 	// Configuration file name override
 	config             string
 	notifypid, scryptn int
+	// Helper variables that are NOT cli options all start with an underscore
 	// _configCustom is true when the user sets a custom config file name.
-	// This is not a CLI option.
 	_configCustom bool
+	// _ctlsockFd stores the control socket file descriptor (ctlsock stores the path)
+	_ctlsockFd net.Listener
 }
 
 var flagSet *flag.FlagSet
@@ -107,6 +110,7 @@ func parseCliOpts() (args argContainer) {
 	flagSet.BoolVar(&args.nonempty, "nonempty", false, "Allow mounting over non-empty directories")
 	flagSet.BoolVar(&args.raw64, "raw64", false, "Use unpadded base64 for file names")
 	flagSet.BoolVar(&args.noprealloc, "noprealloc", false, "Disable preallocation before writing")
+	flagSet.BoolVar(&args.speed, "speed", false, "Run crypto speed test")
 	flagSet.StringVar(&args.masterkey, "masterkey", "", "Mount with explicit master key")
 	flagSet.StringVar(&args.cpuprofile, "cpuprofile", "", "Write cpu profile to specified file")
 	flagSet.StringVar(&args.memprofile, "memprofile", "", "Write memory profile to specified file")
@@ -115,6 +119,7 @@ func parseCliOpts() (args argContainer) {
 	flagSet.StringVar(&args.passfile, "passfile", "", "Read password from file")
 	flagSet.StringVar(&args.ko, "ko", "", "Pass additional options directly to the kernel, comma-separated list")
 	flagSet.StringVar(&args.ctlsock, "ctlsock", "", "Create control socket at specified path")
+	flagSet.StringVar(&args.fsname, "fsname", "", "Override the filesystem name")
 	flagSet.IntVar(&args.notifypid, "notifypid", 0, "Send USR1 to the specified process after "+
 		"successful mount - used internally for daemonization")
 	flagSet.IntVar(&args.scryptn, "scryptn", configfile.ScryptDefaultLogN, "scrypt cost parameter logN. "+
@@ -147,9 +152,9 @@ func parseCliOpts() (args argContainer) {
 			os.Exit(ErrExitUsage)
 		}
 	}
-	// "-passfile FILE" is a shortcut for "-extpass=/bin/cat FILE"
+	// '-passfile FILE' is a shortcut for -extpass='/bin/cat -- FILE'
 	if args.passfile != "" {
-		args.extpass = "/bin/cat " + args.passfile
+		args.extpass = "/bin/cat -- " + args.passfile
 	}
 	if args.extpass != "" && args.masterkey != "" {
 		tlog.Fatal.Printf("The options -extpass and -masterkey cannot be used at the same time")

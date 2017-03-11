@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"log/syslog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -19,8 +21,10 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/configfile"
 	"github.com/rfjakob/gocryptfs/internal/cryptocore"
 	"github.com/rfjakob/gocryptfs/internal/ctlsock"
+	"github.com/rfjakob/gocryptfs/internal/exitcodes"
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend"
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend_reverse"
+	"github.com/rfjakob/gocryptfs/internal/readpassword"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
@@ -50,7 +54,28 @@ func doMount(args *argContainer) int {
 		tlog.Fatal.Printf("Invalid mountpoint: %v", err)
 		os.Exit(ErrExitMountPoint)
 	}
-	// Get master key
+	// Open control socket early so we can error out before asking the user
+	// for the password
+	if args.ctlsock != "" {
+		// We must use an absolute path because we cd to / when daemonizing.
+		// This messes up the delete-on-close logic in the unix socket object.
+		args.ctlsock, _ = filepath.Abs(args.ctlsock)
+		var sock net.Listener
+		sock, err = net.Listen("unix", args.ctlsock)
+		if err != nil {
+			tlog.Fatal.Printf("ctlsock: %v", err)
+			os.Exit(ErrExitMount)
+		}
+		args._ctlsockFd = sock
+		// Close also deletes the socket file
+		defer func() {
+			err = sock.Close()
+			if err != nil {
+				tlog.Warn.Print(err)
+			}
+		}()
+	}
+	// Get master key (may prompt for the password)
 	var masterkey []byte
 	var confFile *configfile.ConfFile
 	if args.masterkey != "" {
@@ -65,7 +90,16 @@ func doMount(args *argContainer) int {
 		masterkey = make([]byte, cryptocore.KeyLen)
 	} else {
 		// Load master key from config file
-		masterkey, confFile = loadConfig(args)
+		// Prompts the user for the password
+		masterkey, confFile, err = loadConfig(args)
+		if err != nil {
+			if args._ctlsockFd != nil {
+				// Close the socket file (which also deletes it)
+				args._ctlsockFd.Close()
+			}
+			exitcodes.Exit(err)
+		}
+		readpassword.CheckTrailingGarbage()
 		printMasterKey(masterkey)
 	}
 	// We cannot use JSON for pretty-printing as the fields are unexported
@@ -73,9 +107,9 @@ func doMount(args *argContainer) int {
 	// Initialize FUSE server
 	srv := initFuseFrontend(masterkey, args, confFile)
 	tlog.Info.Println(tlog.ColorGreen + "Filesystem mounted and ready." + tlog.ColorReset)
+	var paniclog *os.File
 	// We have been forked into the background, as evidenced by the set
 	// "notifypid".
-	var paniclog *os.File
 	if args.notifypid > 0 {
 		// Chdir to the root directory so we don't block unmounting the CWD
 		os.Chdir("/")
@@ -100,6 +134,13 @@ func doMount(args *argContainer) int {
 			// https://github.com/golang/go/issues/325#issuecomment-66049178
 			syscall.Dup2(int(paniclog.Fd()), 1)
 			syscall.Dup2(int(paniclog.Fd()), 2)
+		}
+		// Disconnect from the controlling terminal by creating a new session.
+		// This prevents us from getting SIGINT when the user presses Ctrl-C
+		// to exit a running script that has called gocryptfs.
+		_, err = syscall.Setsid()
+		if err != nil {
+			tlog.Warn.Printf("Setsid: %v", err)
 		}
 		// Send SIGUSR1 to our parent
 		sendUsr1(args.notifypid)
@@ -177,8 +218,10 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 		finalFs = fs
 		ctlSockBackend = fs
 	}
-	if args.ctlsock != "" {
-		ctlsock.CreateAndServe(args.ctlsock, ctlSockBackend)
+	// We have opened the socket early so that we cannot fail here after
+	// asking the user for the password
+	if args._ctlsockFd != nil {
+		go ctlsock.Serve(args._ctlsockFd, ctlSockBackend)
 	}
 	pathFsOpts := &pathfs.PathNodeFsOptions{ClientInodes: true}
 	pathFs := pathfs.NewPathNodeFs(finalFs, pathFsOpts)
@@ -204,7 +247,11 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	}
 	// Set values shown in "df -T" and friends
 	// First column, "Filesystem"
-	mOpts.Options = append(mOpts.Options, "fsname="+args.cipherdir)
+	fsname := args.cipherdir
+	if args.fsname != "" {
+		fsname = args.fsname
+	}
+	mOpts.Options = append(mOpts.Options, "fsname="+fsname)
 	// Second column, "Type", will be shown as "fuse." + Name
 	mOpts.Name = "gocryptfs"
 	if args.reverse {
@@ -246,11 +293,14 @@ func handleSigint(srv *fuse.Server, mountpoint string) {
 		err := srv.Unmount()
 		if err != nil {
 			tlog.Warn.Print(err)
-			tlog.Info.Printf("Trying lazy unmount")
-			cmd := exec.Command("fusermount", "-u", "-z", mountpoint)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			cmd.Run()
+			if runtime.GOOS == "linux" {
+				// MacOSX does not support lazy unmount
+				tlog.Info.Printf("Trying lazy unmount")
+				cmd := exec.Command("fusermount", "-u", "-z", mountpoint)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				cmd.Run()
+			}
 		}
 		os.Exit(1)
 	}()
