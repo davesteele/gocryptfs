@@ -15,6 +15,7 @@ Build-Depends: debhelper (>= 10),
                libssl-dev,
                fuse,
 Standards-Version: 3.9.8
+Testsuite: autopkgtest
 Homepage: https://github.com/rfjakob/gocryptfs
 Vcs-Browser: https://anonscm.debian.org/cgit/pkg-go/packages/gocryptfs.git
 Vcs-Git: https://anonscm.debian.org/git/pkg-go/packages/gocryptfs.git -b debian
@@ -23,7 +24,8 @@ XS-Go-Import-Path: github.com/rfjakob/gocryptfs
 Package: gocryptfs
 Architecture: any
 Built-Using: ${misc:Built-Using}
-Depends: ${shlibs:Depends},
+Depends: libfuse2,
+         ${shlibs:Depends},
          ${misc:Depends}
 Description: Encrypted overlay filesystem written in Go.
  gocryptfs is built on top the excellent go-fuse
