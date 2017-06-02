@@ -1,4 +1,4 @@
-gocryptfs (1.2.1-1) UNRELEASED; urgency=medium
+gocryptfs (1.2.1-1) unstable; urgency=medium
 
   * New upstream version.
   * Fixed FTBFS error.
@@ -6,7 +6,7 @@ gocryptfs (1.2.1-1) UNRELEASED; urgency=medium
   * No longer installs source code.
   * Implement debci CI testing.
 
- -- David Steele <steele@debian.org>  Sat, 11 Mar 2017 16:09:41 -0500
+ -- David Steele <steele@debian.org>  Fri, 02 Jun 2017 13:33:43 -0400
 
 gocryptfs (1.2-2) unstable; urgency=medium
 
