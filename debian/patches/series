@@ -1,3 +1,4 @@
 Fix-the-help-message
 unused-imports
 dup3
+0005-Remove-fusermount-tests-for-autopkgtest.patch
