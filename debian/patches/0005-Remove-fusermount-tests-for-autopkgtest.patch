@@ -10,27 +10,15 @@ The ability to mount fuse filesystems is not available.
  tests/matrix/matrix_test.go                        | 754 ---------------------
  tests/plaintextnames/plaintextnames_test.go        |  84 ---
  tests/reverse/correctness_test.go                  |  91 ---
- .../.gocryptfs.reverse.conf                        |  19 -
- ...xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx |   0
- tests/reverse/ctlsock_reverse_test_fs/file         |   0
- .../file                                           |   0
- ...xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx |   0
  tests/reverse/ctlsock_test.go                      |  68 --
- tests/reverse/linux-tarball-test.bash              |  33 -
  tests/reverse/longname_perf_test.go                |  50 --
  tests/reverse/main_test.go                         |  56 --
- 15 files changed, 1569 deletions(-)
+ 9 files changed, 1517 deletions(-)
  delete mode 100644 tests/defaults/main_test.go
  delete mode 100644 tests/matrix/matrix_test.go
  delete mode 100644 tests/plaintextnames/plaintextnames_test.go
  delete mode 100644 tests/reverse/correctness_test.go
- delete mode 100644 tests/reverse/ctlsock_reverse_test_fs/.gocryptfs.reverse.conf
- delete mode 100644 tests/reverse/ctlsock_reverse_test_fs/dir/longfile.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
- delete mode 100644 tests/reverse/ctlsock_reverse_test_fs/file
- delete mode 100644 tests/reverse/ctlsock_reverse_test_fs/longdir.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/file
- delete mode 100644 tests/reverse/ctlsock_reverse_test_fs/longfile.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
  delete mode 100644 tests/reverse/ctlsock_test.go
- delete mode 100755 tests/reverse/linux-tarball-test.bash
  delete mode 100644 tests/reverse/longname_perf_test.go
  delete mode 100644 tests/reverse/main_test.go
 
@@ -1434,43 +1422,6 @@ index db64983..0000000
 -		t.Errorf("should NOT be executable")
 -	}
 -}
-diff --git a/tests/reverse/ctlsock_reverse_test_fs/.gocryptfs.reverse.conf b/tests/reverse/ctlsock_reverse_test_fs/.gocryptfs.reverse.conf
-deleted file mode 100644
-index 9bd9259..0000000
---- a/tests/reverse/ctlsock_reverse_test_fs/.gocryptfs.reverse.conf
-+++ /dev/null
-@@ -1,19 +0,0 @@
--{
--	"Creator": "gocryptfs v1.1.1-16-g75ebb28-dirty",
--	"EncryptedKey": "cE5bhCZl1iL1tn0dNLh8aQy8n55NMbojmmkwM8iM8/y0uChO0CGaK16sNHffAKJ++qH287JlCpk/BFyi",
--	"ScryptObject": {
--		"Salt": "yUxEmtl4KeUkCxL8b6aYcEGVtFe2NAlwy0WsFLt8p+Y=",
--		"N": 1024,
--		"R": 8,
--		"P": 1,
--		"KeyLen": 32
--	},
--	"Version": 2,
--	"FeatureFlags": [
--		"GCMIV128",
--		"DirIV",
--		"EMENames",
--		"LongNames",
--		"AESSIV"
--	]
--}
-diff --git a/tests/reverse/ctlsock_reverse_test_fs/dir/longfile.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx b/tests/reverse/ctlsock_reverse_test_fs/dir/longfile.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-deleted file mode 100644
-index e69de29..0000000
-diff --git a/tests/reverse/ctlsock_reverse_test_fs/file b/tests/reverse/ctlsock_reverse_test_fs/file
-deleted file mode 100644
-index e69de29..0000000
-diff --git a/tests/reverse/ctlsock_reverse_test_fs/longdir.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/file b/tests/reverse/ctlsock_reverse_test_fs/longdir.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/file
-deleted file mode 100644
-index e69de29..0000000
-diff --git a/tests/reverse/ctlsock_reverse_test_fs/longfile.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx b/tests/reverse/ctlsock_reverse_test_fs/longfile.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-deleted file mode 100644
-index e69de29..0000000
 diff --git a/tests/reverse/ctlsock_test.go b/tests/reverse/ctlsock_test.go
 deleted file mode 100644
 index 8a7d462..0000000
@@ -1545,45 +1496,6 @@ index 8a7d462..0000000
 -	req := ctlsock.RequestStruct{DecryptPath: "gocryptfs.longname.XXX_TestCtlSockCrash_XXX.name"}
 -	test_helpers.QueryCtlSock(t, sock, req)
 -}
-diff --git a/tests/reverse/linux-tarball-test.bash b/tests/reverse/linux-tarball-test.bash
-deleted file mode 100755
-index e8ecca6..0000000
---- a/tests/reverse/linux-tarball-test.bash
-+++ /dev/null
-@@ -1,33 +0,0 @@
--#!/bin/bash
--
--set -eu
--
--cd "$(dirname "$0")"
--MD5="$PWD/../stress_tests/linux-3.0.md5sums"
--MYNAME=$(basename "$0")
--source ../fuse-unmount.bash
--
--# Setup dirs
--cd /tmp
--wget -nv --show-progress -c https://www.kernel.org/pub/linux/kernel/v3.0/linux-3.0.tar.gz
--WD=$(mktemp -d /tmp/$MYNAME.XXX)
--
--# Cleanup trap
--trap "set +u; cd /; fuse-unmount -z $WD/c; fuse-unmount -z $WD/b; rm -rf $WD" EXIT
--
--cd $WD
--mkdir a b c
--echo "Extracting tarball"
--tar -x -f /tmp/linux-3.0.tar.gz -C a
--echo "Mounting a -> b -> c chain"
--# Init "a"
--gocryptfs -q -extpass="echo test" -reverse -init -scryptn=10 a
--# Reverse-mount "a" on "b"
--gocryptfs -q -extpass="echo test" -reverse  a b
--# Forward-mount "b" on "c"
--gocryptfs -q -extpass="echo test" b c
--# Check md5 sums
--cd c
--echo "Checking md5 sums"
--set -o pipefail
--md5sum -c $MD5 | pv -l -s 36782 -N "files checked" | (grep -v ": OK" || true)
 diff --git a/tests/reverse/longname_perf_test.go b/tests/reverse/longname_perf_test.go
 deleted file mode 100644
 index 1707cea..0000000
