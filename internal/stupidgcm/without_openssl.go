@@ -19,7 +19,7 @@ func errExit() {
 	os.Exit(2)
 }
 
-func New(_ []byte) stupidGCM {
+func New(_ []byte, _ bool) stupidGCM {
 	errExit()
 	// Never reached
 	return stupidGCM{}

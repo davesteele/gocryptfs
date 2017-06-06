@@ -15,8 +15,24 @@ type sivAead struct {
 
 var _ cipher.AEAD = &sivAead{}
 
+const (
+	// KeyLen is the required key length. The SIV algorithm supports other lengths,
+	// but we only support 64.
+	KeyLen = 64
+)
+
 // New returns a new cipher.AEAD implementation.
 func New(key []byte) cipher.AEAD {
+	if len(key) != KeyLen {
+		// SIV supports 32, 48 or 64-byte keys, but in gocryptfs we
+		// exclusively use 64.
+		log.Panicf("Key must be %d byte long (you passed %d)", KeyLen, len(key))
+	}
+	return new2(key)
+}
+
+// Same as "New" without the 64-byte restriction.
+func new2(key []byte) cipher.AEAD {
 	return &sivAead{
 		key: key,
 	}

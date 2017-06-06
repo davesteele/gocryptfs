@@ -8,29 +8,29 @@ import (
 
 	"github.com/rfjakob/eme"
 
-	"github.com/rfjakob/gocryptfs/internal/cryptocore"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
 // NameTransform is used to transform filenames.
 type NameTransform struct {
-	cryptoCore *cryptocore.CryptoCore
+	emeCipher  *eme.EMECipher
 	longNames  bool
 	DirIVCache dirIVCache
-	// b64 = either base64.URLEncoding or base64.RawURLEncoding
-	b64 *base64.Encoding
+	// B64 = either base64.URLEncoding or base64.RawURLEncoding, depeding
+	// on the Raw64 feature flag
+	B64 *base64.Encoding
 }
 
 // New returns a new NameTransform instance.
-func New(c *cryptocore.CryptoCore, longNames bool, raw64 bool) *NameTransform {
+func New(e *eme.EMECipher, longNames bool, raw64 bool) *NameTransform {
 	b64 := base64.URLEncoding
 	if raw64 {
-		b64 = getRaw64Encoding()
+		b64 = base64.RawURLEncoding
 	}
 	return &NameTransform{
-		cryptoCore: c,
-		longNames:  longNames,
-		b64:        b64,
+		emeCipher: e,
+		longNames: longNames,
+		B64:       b64,
 	}
 }
 
@@ -39,7 +39,7 @@ func New(c *cryptocore.CryptoCore, longNames bool, raw64 bool) *NameTransform {
 // This function is exported because it allows for a very efficient readdir
 // implementation (read IV once, decrypt all names using this function).
 func (n *NameTransform) DecryptName(cipherName string, iv []byte) (string, error) {
-	bin, err := n.b64.DecodeString(cipherName)
+	bin, err := n.B64.DecodeString(cipherName)
 	if err != nil {
 		return "", err
 	}
@@ -47,7 +47,7 @@ func (n *NameTransform) DecryptName(cipherName string, iv []byte) (string, error
 		tlog.Debug.Printf("DecryptName %q: decoded length %d is not a multiple of 16", cipherName, len(bin))
 		return "", syscall.EINVAL
 	}
-	bin = eme.Transform(n.cryptoCore.BlockCipher, iv, bin, eme.DirectionDecrypt)
+	bin = n.emeCipher.Decrypt(iv, bin)
 	bin, err = unPad16(bin)
 	if err != nil {
 		tlog.Debug.Printf("pad16 error detail: %v", err)
@@ -69,7 +69,7 @@ func (n *NameTransform) DecryptName(cipherName string, iv []byte) (string, error
 func (n *NameTransform) EncryptName(plainName string, iv []byte) (cipherName64 string) {
 	bin := []byte(plainName)
 	bin = pad16(bin)
-	bin = eme.Transform(n.cryptoCore.BlockCipher, iv, bin, eme.DirectionEncrypt)
-	cipherName64 = n.b64.EncodeToString(bin)
+	bin = n.emeCipher.Encrypt(iv, bin)
+	cipherName64 = n.B64.EncodeToString(bin)
 	return cipherName64
 }

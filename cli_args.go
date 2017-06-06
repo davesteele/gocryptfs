@@ -10,6 +10,7 @@ import (
 
 	"github.com/rfjakob/gocryptfs/internal/configfile"
 	"github.com/rfjakob/gocryptfs/internal/prefer_openssl"
+	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
@@ -18,7 +19,7 @@ type argContainer struct {
 	debug, init, zerokey, fusedebug, openssl, passwd, fg, version,
 	plaintextnames, quiet, nosyslog, wpanic,
 	longnames, allow_other, ro, reverse, aessiv, nonempty, raw64,
-	noprealloc, speed bool
+	noprealloc, speed, hkdf, serialize_reads, forcedecode bool
 	masterkey, mountpoint, cipherdir, cpuprofile, extpass,
 	memprofile, ko, passfile, ctlsock, fsname string
 	// Configuration file name override
@@ -35,10 +36,18 @@ var flagSet *flag.FlagSet
 
 // prefixOArgs transform options passed via "-o foo,bar" into regular options
 // like "-foo -bar" and prefixes them to the command line.
+// Testcases in TestPrefixOArgs().
 func prefixOArgs(osArgs []string) []string {
-	// Need at least 3, example: gocryptfs -o foo,bar
+	// Need at least 3, example: gocryptfs -o    foo,bar
+	//                               ^ 0    ^ 1    ^ 2
 	if len(osArgs) < 3 {
 		return osArgs
+	}
+	// Passing "--" disables "-o" parsing. Ignore element 0 (program name).
+	for _, v := range osArgs[1:] {
+		if v == "--" {
+			return osArgs
+		}
 	}
 	// Find and extract "-o foo,bar"
 	var otherArgs, oOpts []string
@@ -108,9 +117,13 @@ func parseCliOpts() (args argContainer) {
 	flagSet.BoolVar(&args.reverse, "reverse", false, "Reverse mode")
 	flagSet.BoolVar(&args.aessiv, "aessiv", false, "AES-SIV encryption")
 	flagSet.BoolVar(&args.nonempty, "nonempty", false, "Allow mounting over non-empty directories")
-	flagSet.BoolVar(&args.raw64, "raw64", false, "Use unpadded base64 for file names")
+	flagSet.BoolVar(&args.raw64, "raw64", true, "Use unpadded base64 for file names")
 	flagSet.BoolVar(&args.noprealloc, "noprealloc", false, "Disable preallocation before writing")
 	flagSet.BoolVar(&args.speed, "speed", false, "Run crypto speed test")
+	flagSet.BoolVar(&args.hkdf, "hkdf", true, "Use HKDF as an additional key derivation step")
+	flagSet.BoolVar(&args.serialize_reads, "serialize_reads", false, "Try to serialize read operations")
+	flagSet.BoolVar(&args.forcedecode, "forcedecode", false, "Force decode of files even if integrity check fails."+
+		" Requires gocryptfs to be compiled with openssl support and implies -openssl true")
 	flagSet.StringVar(&args.masterkey, "masterkey", "", "Mount with explicit master key")
 	flagSet.StringVar(&args.cpuprofile, "cpuprofile", "", "Write cpu profile to specified file")
 	flagSet.StringVar(&args.memprofile, "memprofile", "", "Write memory profile to specified file")
@@ -122,8 +135,8 @@ func parseCliOpts() (args argContainer) {
 	flagSet.StringVar(&args.fsname, "fsname", "", "Override the filesystem name")
 	flagSet.IntVar(&args.notifypid, "notifypid", 0, "Send USR1 to the specified process after "+
 		"successful mount - used internally for daemonization")
-	flagSet.IntVar(&args.scryptn, "scryptn", configfile.ScryptDefaultLogN, "scrypt cost parameter logN. "+
-		"A lower value speeds up mounting but makes the password susceptible to brute-force attacks")
+	flagSet.IntVar(&args.scryptn, "scryptn", configfile.ScryptDefaultLogN, "scrypt cost parameter logN. Possible values: 10-28. "+
+		"A lower value speeds up mounting and reduces its memory needs, but makes the password susceptible to brute-force attacks")
 	// Ignored otions
 	var dummyBool bool
 	ignoreText := "(ignored for compatibility)"
@@ -151,6 +164,32 @@ func parseCliOpts() (args argContainer) {
 			tlog.Fatal.Printf("Invalid \"-openssl\" setting: %v", err)
 			os.Exit(ErrExitUsage)
 		}
+	}
+	// "-forcedecode" only works with openssl. Check compilation and command line parameters
+	if args.forcedecode == true {
+		if stupidgcm.BuiltWithoutOpenssl == true {
+			tlog.Fatal.Printf("The -forcedecode flag requires openssl support, but gocryptfs was compiled without it!")
+			os.Exit(ErrExitUsage)
+		}
+		if args.aessiv == true {
+			tlog.Fatal.Printf("The -forcedecode and -aessiv flags are incompatible because they use different crypto libs (openssl vs native Go)")
+			os.Exit(ErrExitUsage)
+		}
+		if args.reverse == true {
+			tlog.Fatal.Printf("The reverse mode and the -forcedecode option are not compatible")
+			os.Exit(ErrExitUsage)
+		}
+		// Has the user explicitely disabled openssl using "-openssl=false/0"?
+		if !args.openssl && opensslAuto != "auto" {
+			tlog.Fatal.Printf("-forcedecode requires openssl, but is disabled via command-line option")
+			os.Exit(ErrExitUsage)
+		}
+		args.openssl = true
+
+		// Try to make it harder for the user to shoot himself in the foot.
+		args.ro = true
+		args.allow_other = false
+		args.ko = "noexec"
 	}
 	// '-passfile FILE' is a shortcut for -extpass='/bin/cat -- FILE'
 	if args.passfile != "" {

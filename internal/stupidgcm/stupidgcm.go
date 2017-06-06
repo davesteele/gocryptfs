@@ -10,7 +10,6 @@ import "C"
 
 import (
 	"crypto/cipher"
-	"fmt"
 	"log"
 	"unsafe"
 )
@@ -26,17 +25,18 @@ const (
 
 // stupidGCM implements the cipher.AEAD interface
 type stupidGCM struct {
-	key []byte
+	key         []byte
+	forceDecode bool
 }
 
 var _ cipher.AEAD = &stupidGCM{}
 
 // New returns a new cipher.AEAD implementation..
-func New(key []byte) cipher.AEAD {
+func New(key []byte, forceDecode bool) cipher.AEAD {
 	if len(key) != keyLen {
 		log.Panicf("Only %d-byte keys are supported", keyLen)
 	}
-	return stupidGCM{key: key}
+	return stupidGCM{key: key, forceDecode: forceDecode}
 }
 
 func (g stupidGCM) NonceSize() int {
@@ -186,7 +186,12 @@ func (g stupidGCM) Open(dst, iv, in, authData []byte) ([]byte, error) {
 	C.EVP_CIPHER_CTX_free(ctx)
 
 	if res != 1 {
-		return nil, fmt.Errorf("stupidgcm: message authentication failed")
+		// The error code must always be checked by the calling function, because the decrypted buffer
+		// may contain corrupted data that we are returning in case the user forced reads
+		if g.forceDecode == true {
+			return append(dst, buf...), ErrAuth
+		}
+		return nil, ErrAuth
 	}
 
 	return append(dst, buf...), nil

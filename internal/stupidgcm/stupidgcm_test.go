@@ -1,10 +1,6 @@
-// +build go1.5
-// = go 1.5 or higher
-//
 // We compare against Go's built-in GCM implementation. Since stupidgcm only
 // supports 128-bit IVs and Go only supports that from 1.5 onward, we cannot
 // run these tests on older Go versions.
-
 package stupidgcm
 
 import (
@@ -31,7 +27,7 @@ func randBytes(n int) []byte {
 // GCM implemenatation and verifies that the results are identical.
 func TestEncryptDecrypt(t *testing.T) {
 	key := randBytes(32)
-	sGCM := New(key)
+	sGCM := New(key, false)
 	authData := randBytes(24)
 	iv := randBytes(16)
 	dst := make([]byte, 71) // 71 = random length
@@ -81,7 +77,7 @@ func TestEncryptDecrypt(t *testing.T) {
 // error
 func TestCorruption(t *testing.T) {
 	key := randBytes(32)
-	sGCM := New(key)
+	sGCM := New(key, false)
 	authData := randBytes(24)
 	iv := randBytes(16)
 

@@ -1,5 +1,3 @@
-// +build go1.5
-
 // Package speed implements the "-speed" command-line option,
 // similar to "openssl speed".
 // It benchmarks the crypto algorithms and libraries used by
@@ -19,6 +17,7 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
 )
 
+// Run - run the speed the test and print the results.
 func Run() {
 	bTable := []struct {
 		name      string
@@ -74,7 +73,7 @@ func bStupidGCM(b *testing.B) {
 	in := make([]byte, blockSize)
 	b.SetBytes(int64(len(in)))
 
-	sGCM := stupidgcm.New(key)
+	sGCM := stupidgcm.New(key, false)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

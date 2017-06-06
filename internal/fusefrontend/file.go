@@ -4,7 +4,6 @@ package fusefrontend
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -17,6 +16,8 @@ import (
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 
 	"github.com/rfjakob/gocryptfs/internal/contentenc"
+	"github.com/rfjakob/gocryptfs/internal/serialize_reads"
+	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
 	"github.com/rfjakob/gocryptfs/internal/syscallcompat"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
@@ -51,6 +52,10 @@ type file struct {
 	lastOpCount uint64
 	// Parent filesystem
 	fs *FS
+	// We embed a nodefs.NewDefaultFile() that returns ENOSYS for every operation we
+	// have not implemented. This prevents build breakage when the go-fuse library
+	// adds new methods to the nodefs.File interface.
+	nodefs.File
 }
 
 // NewFile returns a new go-fuse File instance.
@@ -72,6 +77,7 @@ func NewFile(fd *os.File, writeOnly bool, fs *FS) (nodefs.File, fuse.Status) {
 		fileTableEntry: t,
 		loopbackFile:   nodefs.NewLoopbackFile(fd),
 		fs:             fs,
+		File:           nodefs.NewDefaultFile(),
 	}, fuse.OK
 }
 
@@ -91,11 +97,20 @@ func (f *file) SetInode(n *nodefs.Inode) {
 // readFileID loads the file header from disk and extracts the file ID.
 // Returns io.EOF if the file is empty.
 func (f *file) readFileID() ([]byte, error) {
-	buf := make([]byte, contentenc.HeaderLen)
-	_, err := f.fd.ReadAt(buf, 0)
+	// We read +1 byte to determine if the file has actual content
+	// and not only the header. A header-only file will be considered empty.
+	// This makes File ID poisoning more difficult.
+	readLen := contentenc.HeaderLen + 1
+	buf := make([]byte, readLen)
+	n, err := f.fd.ReadAt(buf, 0)
 	if err != nil {
+		if err == io.EOF && n != 0 {
+			tlog.Warn.Printf("ino%d: readFileID: incomplete file, got %d instead of %d bytes",
+				f.devIno.ino, n, readLen)
+		}
 		return nil, err
 	}
+	buf = buf[:contentenc.HeaderLen]
 	h, err := contentenc.ParseHeader(buf)
 	if err != nil {
 		return nil, err
@@ -123,10 +138,6 @@ func (f *file) createHeader() (fileID []byte, err error) {
 		return nil, err
 	}
 	return h.ID, err
-}
-
-func (f *file) String() string {
-	return fmt.Sprintf("cryptFile(%s)", f.fd.Name())
 }
 
 // doRead - returns "length" plaintext bytes from plaintext offset "off".
@@ -167,6 +178,7 @@ func (f *file) doRead(off uint64, length uint64) ([]byte, fuse.Status) {
 	alignedOffset, alignedLength := blocks[0].JointCiphertextRange(blocks)
 	skip := blocks[0].Skip
 	tlog.Debug.Printf("JointCiphertextRange(%d, %d) -> %d, %d, %d", off, length, alignedOffset, alignedLength, skip)
+
 	ciphertext := make([]byte, int(alignedLength))
 	n, err := f.fd.ReadAt(ciphertext, int64(alignedOffset))
 	// We don't care if the file ID changes after we have read the data. Drop the lock.
@@ -184,9 +196,16 @@ func (f *file) doRead(off uint64, length uint64) ([]byte, fuse.Status) {
 	// Decrypt it
 	plaintext, err := f.contentEnc.DecryptBlocks(ciphertext, firstBlockNo, fileID)
 	if err != nil {
-		curruptBlockNo := firstBlockNo + f.contentEnc.PlainOffToBlockNo(uint64(len(plaintext)))
-		tlog.Warn.Printf("ino%d: doRead: corrupt block #%d: %v", f.devIno.ino, curruptBlockNo, err)
-		return nil, fuse.EIO
+		if f.fs.args.ForceDecode && err == stupidgcm.ErrAuth {
+			// We do not have the information which block was corrupt here anymore,
+			// but DecryptBlocks() has already logged it anyway.
+			tlog.Warn.Printf("ino%d: doRead off=%d len=%d: returning corrupt data due to forcedecode",
+				f.devIno.ino, off, length)
+		} else {
+			curruptBlockNo := firstBlockNo + f.contentEnc.PlainOffToBlockNo(uint64(len(plaintext)))
+			tlog.Warn.Printf("ino%d: doRead: corrupt block #%d: %v", f.devIno.ino, curruptBlockNo, err)
+			return nil, fuse.EIO
+		}
 	}
 
 	// Crop down to the relevant part
@@ -215,7 +234,15 @@ func (f *file) Read(buf []byte, off int64) (resultData fuse.ReadResult, code fus
 		return nil, fuse.EBADF
 	}
 
+	if f.fs.args.SerializeReads {
+		serialize_reads.Wait(off, len(buf))
+	}
+
 	out, status := f.doRead(uint64(off), uint64(len(buf)))
+
+	if f.fs.args.SerializeReads {
+		serialize_reads.Done()
+	}
 
 	if status == fuse.EIO {
 		tlog.Warn.Printf("ino%d: Read: returning EIO, offset=%d, length=%d", f.devIno.ino, len(buf), off)

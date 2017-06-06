@@ -4,7 +4,6 @@ package fusefrontend
 // FUSE operations on paths
 
 import (
-	"encoding/base64"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/contentenc"
 	"github.com/rfjakob/gocryptfs/internal/cryptocore"
 	"github.com/rfjakob/gocryptfs/internal/nametransform"
+	"github.com/rfjakob/gocryptfs/internal/serialize_reads"
 	"github.com/rfjakob/gocryptfs/internal/syscallcompat"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
@@ -40,9 +40,13 @@ var _ pathfs.FileSystem = &FS{} // Verify that interface is implemented.
 
 // NewFS returns a new encrypted FUSE overlay filesystem.
 func NewFS(args Args) *FS {
-	cryptoCore := cryptocore.New(args.Masterkey, args.CryptoBackend, contentenc.DefaultIVBits)
-	contentEnc := contentenc.New(cryptoCore, contentenc.DefaultBS)
-	nameTransform := nametransform.New(cryptoCore, args.LongNames, args.Raw64)
+	cryptoCore := cryptocore.New(args.Masterkey, args.CryptoBackend, contentenc.DefaultIVBits, args.HKDF, args.ForceDecode)
+	contentEnc := contentenc.New(cryptoCore, contentenc.DefaultBS, args.ForceDecode)
+	nameTransform := nametransform.New(cryptoCore.EMECipher, args.LongNames, args.Raw64)
+
+	if args.SerializeReads {
+		serialize_reads.InitSerializer()
+	}
 
 	return &FS{
 		FileSystem:    pathfs.NewLoopbackFileSystem(args.Cipherdir),
@@ -187,7 +191,19 @@ func (fs *FS) Chown(path string, uid uint32, gid uint32, context *fuse.Context) 
 	if err != nil {
 		return fuse.ToStatus(err)
 	}
-	return fuse.ToStatus(os.Lchown(cPath, int(uid), int(gid)))
+	code = fuse.ToStatus(os.Lchown(cPath, int(uid), int(gid)))
+	if !code.Ok() {
+		return code
+	}
+	if !fs.args.PlaintextNames {
+		// When filename encryption is active, every directory contains
+		// a "gocryptfs.diriv" file. This file should also change the owner.
+		// Instead of checking if "cPath" is a directory, we just blindly
+		// execute the Lchown on "cPath/gocryptfs.diriv" and ignore errors.
+		dirIVPath := filepath.Join(cPath, nametransform.DirIVFilename)
+		os.Lchown(dirIVPath, int(uid), int(gid))
+	}
+	return fuse.OK
 }
 
 // Mknod implements pathfs.Filesystem.
@@ -286,7 +302,7 @@ func (fs *FS) Readlink(path string, context *fuse.Context) (out string, status f
 		return cTarget, fuse.OK
 	}
 	// Symlinks are encrypted like file contents (GCM) and base64-encoded
-	cBinTarget, err := base64.URLEncoding.DecodeString(cTarget)
+	cBinTarget, err := fs.nameTransform.B64.DecodeString(cTarget)
 	if err != nil {
 		tlog.Warn.Printf("Readlink: %v", err)
 		return "", fuse.EIO
@@ -350,7 +366,7 @@ func (fs *FS) Symlink(target string, linkName string, context *fuse.Context) (co
 	}
 	// Symlinks are encrypted like file contents (GCM) and base64-encoded
 	cBinTarget := fs.contentEnc.EncryptBlock([]byte(target), 0, nil)
-	cTarget := base64.URLEncoding.EncodeToString(cBinTarget)
+	cTarget := fs.nameTransform.B64.EncodeToString(cBinTarget)
 	// Handle long file name
 	cName := filepath.Base(cPath)
 	if nametransform.IsLongContent(cName) {

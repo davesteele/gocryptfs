@@ -134,6 +134,8 @@ func doMount(args *argContainer) int {
 			// https://github.com/golang/go/issues/325#issuecomment-66049178
 			syscall.Dup2(int(paniclog.Fd()), 1)
 			syscall.Dup2(int(paniclog.Fd()), 2)
+			// No need for the extra FD anymore, we have it saved in Stderr
+			paniclog.Close()
 		}
 		// Disconnect from the controlling terminal by creating a new session.
 		// This prevents us from getting SIGINT when the user presses Ctrl-C
@@ -153,7 +155,8 @@ func doMount(args *argContainer) int {
 	srv.Serve()
 	// Delete empty paniclogs
 	if paniclog != nil {
-		fi, err := paniclog.Stat()
+		// The paniclog FD is saved in Stderr
+		fi, err := os.Stderr.Stat()
 		if err != nil {
 			tlog.Warn.Printf("paniclog fstat error: %v", err)
 		} else if fi.Size() > 0 {
@@ -187,12 +190,16 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 		ConfigCustom:   args._configCustom,
 		Raw64:          args.raw64,
 		NoPrealloc:     args.noprealloc,
+		HKDF:           args.hkdf,
+		SerializeReads: args.serialize_reads,
+		ForceDecode:    args.forcedecode,
 	}
 	// confFile is nil when "-zerokey" or "-masterkey" was used
 	if confFile != nil {
 		// Settings from the config file override command line args
 		frontendArgs.PlaintextNames = confFile.IsFeatureFlagSet(configfile.FlagPlaintextNames)
 		frontendArgs.Raw64 = confFile.IsFeatureFlagSet(configfile.FlagRaw64)
+		frontendArgs.HKDF = confFile.IsFeatureFlagSet(configfile.FlagHKDF)
 		if confFile.IsFeatureFlagSet(configfile.FlagAESSIV) {
 			frontendArgs.CryptoBackend = cryptocore.BackendAESSIV
 		} else if args.reverse {
@@ -241,6 +248,10 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 		mOpts.AllowOther = true
 		// Make the kernel check the file permissions for us
 		mOpts.Options = append(mOpts.Options, "default_permissions")
+	}
+	if args.forcedecode {
+		tlog.Info.Printf(tlog.ColorYellow + "THE OPTION \"-forcedecode\" IS ACTIVE. GOCRYPTFS WILL RETURN CORRUPT DATA!" +
+			tlog.ColorReset)
 	}
 	if args.nonempty {
 		mOpts.Options = append(mOpts.Options, "nonempty")
