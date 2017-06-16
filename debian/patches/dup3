@@ -10,9 +10,11 @@ https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=843786
  mount.go | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)
 
+diff --git a/mount.go b/mount.go
+index 59116d6..a1cab38 100644
 --- a/mount.go
 +++ b/mount.go
-@@ -132,8 +132,8 @@
+@@ -132,8 +132,8 @@ func doMount(args *argContainer) int {
  			// instead of closing them so users have a chance to get the
  			// backtrace on a panic.
  			// https://github.com/golang/go/issues/325#issuecomment-66049178
