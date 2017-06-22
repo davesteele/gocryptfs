@@ -1,4 +1,0 @@
-Tests: gocryptfs-test
-Depends: @, @builddeps@
-Restrictions: build-needed
-
