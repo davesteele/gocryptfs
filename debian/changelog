@@ -1,3 +1,10 @@
+gocryptfs (1.4-1) UNRELEASED; urgency=medium
+
+  * New upstream version.
+  * CI tests removed.
+
+ -- David Steele <steele@debian.org>  Sun, 25 Jun 2017 19:22:06 -0400
+
 gocryptfs (1.3-1) unstable; urgency=medium
 
   * New upstream version.
