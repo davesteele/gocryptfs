@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hanwen/go-fuse/fuse"
 	"github.com/rfjakob/gocryptfs/internal/configfile"
+	"github.com/rfjakob/gocryptfs/internal/exitcodes"
 	"github.com/rfjakob/gocryptfs/internal/prefer_openssl"
 	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
@@ -19,9 +21,9 @@ type argContainer struct {
 	debug, init, zerokey, fusedebug, openssl, passwd, fg, version,
 	plaintextnames, quiet, nosyslog, wpanic,
 	longnames, allow_other, ro, reverse, aessiv, nonempty, raw64,
-	noprealloc, speed, hkdf, serialize_reads, forcedecode bool
+	noprealloc, speed, hkdf, serialize_reads, forcedecode, hh, info bool
 	masterkey, mountpoint, cipherdir, cpuprofile, extpass,
-	memprofile, ko, passfile, ctlsock, fsname string
+	memprofile, ko, passfile, ctlsock, fsname, force_owner, trace string
 	// Configuration file name override
 	config             string
 	notifypid, scryptn int
@@ -30,6 +32,8 @@ type argContainer struct {
 	_configCustom bool
 	// _ctlsockFd stores the control socket file descriptor (ctlsock stores the path)
 	_ctlsockFd net.Listener
+	// _forceOwner is, if non-nil, a parsed, validated Owner (as opposed to the string above)
+	_forceOwner *fuse.Owner
 }
 
 var flagSet *flag.FlagSet
@@ -56,7 +60,7 @@ func prefixOArgs(osArgs []string) []string {
 			// Last argument?
 			if i+1 >= len(osArgs) {
 				tlog.Fatal.Printf("The \"-o\" option requires an argument")
-				os.Exit(ErrExitUsage)
+				os.Exit(exitcodes.Usage)
 			}
 			oOpts = strings.Split(osArgs[i+1], ",")
 			// Skip over the arguments to "-o"
@@ -76,7 +80,7 @@ func prefixOArgs(osArgs []string) []string {
 		}
 		if o == "o" || o == "-o" {
 			tlog.Fatal.Printf("You can't pass \"-o\" to \"-o\"")
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 		newArgs = append(newArgs, "-"+o)
 	}
@@ -93,7 +97,7 @@ func parseCliOpts() (args argContainer) {
 	var opensslAuto string
 
 	flagSet = flag.NewFlagSet(tlog.ProgramName, flag.ContinueOnError)
-	flagSet.Usage = usageText
+	flagSet.Usage = helpShort
 	flagSet.BoolVar(&args.debug, "d", false, "")
 	flagSet.BoolVar(&args.debug, "debug", false, "Enable debug output")
 	flagSet.BoolVar(&args.fusedebug, "fusedebug", false, "Enable fuse library debug output")
@@ -124,6 +128,8 @@ func parseCliOpts() (args argContainer) {
 	flagSet.BoolVar(&args.serialize_reads, "serialize_reads", false, "Try to serialize read operations")
 	flagSet.BoolVar(&args.forcedecode, "forcedecode", false, "Force decode of files even if integrity check fails."+
 		" Requires gocryptfs to be compiled with openssl support and implies -openssl true")
+	flagSet.BoolVar(&args.hh, "hh", false, "Show this long help text")
+	flagSet.BoolVar(&args.info, "info", false, "Display information about CIPHERDIR")
 	flagSet.StringVar(&args.masterkey, "masterkey", "", "Mount with explicit master key")
 	flagSet.StringVar(&args.cpuprofile, "cpuprofile", "", "Write cpu profile to specified file")
 	flagSet.StringVar(&args.memprofile, "memprofile", "", "Write memory profile to specified file")
@@ -133,6 +139,8 @@ func parseCliOpts() (args argContainer) {
 	flagSet.StringVar(&args.ko, "ko", "", "Pass additional options directly to the kernel, comma-separated list")
 	flagSet.StringVar(&args.ctlsock, "ctlsock", "", "Create control socket at specified path")
 	flagSet.StringVar(&args.fsname, "fsname", "", "Override the filesystem name")
+	flagSet.StringVar(&args.force_owner, "force_owner", "", "uid:gid pair to coerce ownership")
+	flagSet.StringVar(&args.trace, "trace", "", "Write execution trace to file")
 	flagSet.IntVar(&args.notifypid, "notifypid", 0, "Send USR1 to the specified process after "+
 		"successful mount - used internally for daemonization")
 	flagSet.IntVar(&args.scryptn, "scryptn", configfile.ScryptDefaultLogN, "scrypt cost parameter logN. Possible values: 10-28. "+
@@ -144,7 +152,7 @@ func parseCliOpts() (args argContainer) {
 	flagSet.BoolVar(&dummyBool, "nosuid", false, ignoreText)
 	flagSet.BoolVar(&dummyBool, "nodev", false, ignoreText)
 	var dummyString string
-	flagSet.StringVar(&dummyString, "o", "", "For compatibility, all options can be also passed as a comma-separated list to -o.")
+	flagSet.StringVar(&dummyString, "o", "", "For compatibility with mount(1), options can be also passed as a comma-separated list to -o on the end.")
 	// Actual parsing
 	err = flagSet.Parse(os.Args[1:])
 	if err == flag.ErrHelp {
@@ -153,7 +161,7 @@ func parseCliOpts() (args argContainer) {
 	if err != nil {
 		tlog.Warn.Printf("You passed: %s", prettyArgs())
 		tlog.Fatal.Printf("%v", err)
-		os.Exit(ErrExitUsage)
+		os.Exit(exitcodes.Usage)
 	}
 	// "-openssl" needs some post-processing
 	if opensslAuto == "auto" {
@@ -162,27 +170,27 @@ func parseCliOpts() (args argContainer) {
 		args.openssl, err = strconv.ParseBool(opensslAuto)
 		if err != nil {
 			tlog.Fatal.Printf("Invalid \"-openssl\" setting: %v", err)
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 	}
 	// "-forcedecode" only works with openssl. Check compilation and command line parameters
 	if args.forcedecode == true {
 		if stupidgcm.BuiltWithoutOpenssl == true {
 			tlog.Fatal.Printf("The -forcedecode flag requires openssl support, but gocryptfs was compiled without it!")
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 		if args.aessiv == true {
 			tlog.Fatal.Printf("The -forcedecode and -aessiv flags are incompatible because they use different crypto libs (openssl vs native Go)")
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 		if args.reverse == true {
 			tlog.Fatal.Printf("The reverse mode and the -forcedecode option are not compatible")
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 		// Has the user explicitely disabled openssl using "-openssl=false/0"?
 		if !args.openssl && opensslAuto != "auto" {
 			tlog.Fatal.Printf("-forcedecode requires openssl, but is disabled via command-line option")
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 		args.openssl = true
 
@@ -197,7 +205,7 @@ func parseCliOpts() (args argContainer) {
 	}
 	if args.extpass != "" && args.masterkey != "" {
 		tlog.Fatal.Printf("The options -extpass and -masterkey cannot be used at the same time")
-		os.Exit(ErrExitUsage)
+		os.Exit(exitcodes.Usage)
 	}
 	return args
 }

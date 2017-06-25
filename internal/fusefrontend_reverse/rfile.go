@@ -2,14 +2,18 @@ package fusefrontend_reverse
 
 import (
 	"bytes"
-	"encoding/binary"
 	"io"
 	"os"
+	"syscall"
+
+	// In newer Go versions, this has moved to just "sync/syncmap".
+	"golang.org/x/sync/syncmap"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 
 	"github.com/rfjakob/gocryptfs/internal/contentenc"
+	"github.com/rfjakob/gocryptfs/internal/pathiv"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
@@ -26,6 +30,8 @@ type reverseFile struct {
 	contentEnc *contentenc.ContentEnc
 }
 
+var inodeTable syncmap.Map
+
 func (rfs *ReverseFS) newFile(relPath string, flags uint32) (nodefs.File, fuse.Status) {
 	absPath, err := rfs.abs(rfs.decryptPath(relPath))
 	if err != nil {
@@ -35,16 +41,44 @@ func (rfs *ReverseFS) newFile(relPath string, flags uint32) (nodefs.File, fuse.S
 	if err != nil {
 		return nil, fuse.ToStatus(err)
 	}
-	id := derivePathIV(relPath, ivPurposeFileID)
+	var st syscall.Stat_t
+	err = syscall.Fstat(int(fd.Fd()), &st)
+	if err != nil {
+		tlog.Warn.Printf("newFile: Fstat error: %v", err)
+		return nil, fuse.ToStatus(err)
+	}
+	// See if we have that inode number already in the table
+	// (even if Nlink has dropped to 1)
+	var derivedIVs pathiv.FileIVs
+	v, found := inodeTable.Load(st.Ino)
+	if found {
+		tlog.Debug.Printf("ino%d: newFile: found in the inode table", st.Ino)
+		derivedIVs = v.(pathiv.FileIVs)
+	} else {
+		derivedIVs = pathiv.DeriveFile(relPath)
+		// Nlink > 1 means there is more than one path to this file.
+		// Store the derived values so we always return the same data,
+		// regardless of the path that is used to access the file.
+		// This means that the first path wins.
+		if st.Nlink > 1 {
+			v, found = inodeTable.LoadOrStore(st.Ino, derivedIVs)
+			if found {
+				// Another thread has stored a different value before we could.
+				derivedIVs = v.(pathiv.FileIVs)
+			} else {
+				tlog.Debug.Printf("ino%d: newFile: Nlink=%d, stored in the inode table", st.Ino, st.Nlink)
+			}
+		}
+	}
 	header := contentenc.FileHeader{
 		Version: contentenc.CurrentVersion,
-		ID:      id,
+		ID:      derivedIVs.ID,
 	}
 	return &reverseFile{
 		File:       nodefs.NewDefaultFile(),
 		fd:         fd,
 		header:     header,
-		block0IV:   derivePathIV(relPath, ivPurposeBlock0IV),
+		block0IV:   derivedIVs.Block0IV,
 		contentEnc: rfs.contentEnc,
 	}, fuse.OK
 }
@@ -60,18 +94,13 @@ func (rf *reverseFile) GetAttr(*fuse.Attr) fuse.Status {
 // encryptBlocks - encrypt "plaintext" into a number of ciphertext blocks.
 // "plaintext" must already be block-aligned.
 func (rf *reverseFile) encryptBlocks(plaintext []byte, firstBlockNo uint64, fileID []byte, block0IV []byte) []byte {
-	nonce := make([]byte, len(block0IV))
-	copy(nonce, block0IV)
-	block0IVlow := binary.BigEndian.Uint64(block0IV[8:])
-	nonceLow := nonce[8:]
-
 	inBuf := bytes.NewBuffer(plaintext)
 	var outBuf bytes.Buffer
 	bs := int(rf.contentEnc.PlainBS())
 	for blockNo := firstBlockNo; inBuf.Len() > 0; blockNo++ {
-		binary.BigEndian.PutUint64(nonceLow, block0IVlow+blockNo)
 		inBlock := inBuf.Next(bs)
-		outBlock := rf.contentEnc.EncryptBlockNonce(inBlock, blockNo, fileID, nonce)
+		iv := pathiv.BlockIV(block0IV, blockNo)
+		outBlock := rf.contentEnc.EncryptBlockNonce(inBlock, blockNo, fileID, iv)
 		outBuf.Write(outBlock)
 	}
 	return outBuf.Bytes()

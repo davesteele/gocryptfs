@@ -3,12 +3,13 @@ package defaults
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
-	"syscall"
+	"runtime"
+	"sync"
 	"testing"
 
-	"github.com/rfjakob/gocryptfs/internal/ctlsock"
 	"github.com/rfjakob/gocryptfs/tests/test_helpers"
 )
 
@@ -36,36 +37,6 @@ func Test1980Tar(t *testing.T) {
 	m := fi.ModTime().Unix()
 	if m != 315619323 {
 		t.Errorf("Wrong mtime: %d", m)
-	}
-}
-
-func TestCtlSock(t *testing.T) {
-	cDir := test_helpers.InitFS(t)
-	pDir := cDir + ".mnt"
-	sock := cDir + ".sock"
-	test_helpers.MountOrFatal(t, cDir, pDir, "-ctlsock="+sock, "-extpass", "echo test")
-	defer test_helpers.UnmountPanic(pDir)
-	req := ctlsock.RequestStruct{
-		EncryptPath: "foobar",
-	}
-	response := test_helpers.QueryCtlSock(t, sock, req)
-	if response.Result == "" || response.ErrNo != 0 {
-		t.Errorf("got an error reply: %+v", response)
-	}
-	req.EncryptPath = "not-existing-dir/xyz"
-	response = test_helpers.QueryCtlSock(t, sock, req)
-	if response.ErrNo != int32(syscall.ENOENT) || response.Result != "" {
-		t.Errorf("incorrect error handling: %+v", response)
-	}
-	// Strange paths should not cause a crash
-	crashers := []string{"/foo", "foo/", "/foo/", ".", "/////", "/../../."}
-	for _, c := range crashers {
-		req.EncryptPath = c
-		// QueryCtlSock calls t.Fatal if it gets EOF when gocryptfs panics
-		response = test_helpers.QueryCtlSock(t, sock, req)
-		if response.WarnText == "" {
-			t.Errorf("We should get a warning about non-canonical paths here")
-		}
 	}
 }
 
@@ -115,4 +86,78 @@ func TestOpenTruncateRead(t *testing.T) {
 	if !bytes.Equal(content, xyz) {
 		t.Fatalf("wrong content: %s", string(content))
 	}
+}
+
+// TestWORead tries to read from a write-only FD.
+func TestWORead(t *testing.T) {
+	fn := test_helpers.DefaultPlainDir + "/TestWORead"
+	fd, err := os.OpenFile(fn, os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd.Close()
+	buf := make([]byte, 10)
+	_, err = fd.Read(buf)
+	if err == nil {
+		t.Error("Reading from write-only file should fail, but did not")
+	}
+}
+
+// xfstests generic/124 triggers this warning:
+// cipherSize 18 == header size: interrupted write?
+// This test reproduces the problem.
+func TestXfs124(t *testing.T) {
+	// GOMAXPROCS=8 and N=5000 seem to reliably trigger the problem. With N=1000,
+	// the test passes sometimes.
+	runtime.GOMAXPROCS(8)
+	N := 5000
+
+	fn := test_helpers.DefaultPlainDir + "/TestXfs124"
+	fd, err := os.Create(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		buf := make([]byte, 10)
+		var err2 error
+		for i := 0; i < N; i++ {
+			err2 = fd.Truncate(0)
+			if err2 != nil {
+				panic(err2)
+			}
+			_, err2 = fd.WriteAt(buf, 0)
+			if err2 != nil {
+				panic(err2)
+			}
+		}
+		wg.Done()
+	}()
+
+	fd2, err := os.Open(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd2.Close()
+
+	go func() {
+		buf := make([]byte, 10)
+		var err3 error
+		for i := 0; i < N; i++ {
+			_, err3 = fd2.ReadAt(buf, 0)
+			if err3 == io.EOF {
+				continue
+			}
+			if err3 != nil {
+				panic(err3)
+			}
+		}
+		wg.Done()
+	}()
+
+	wg.Wait()
 }

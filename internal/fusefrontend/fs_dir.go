@@ -273,16 +273,14 @@ func (fs *FS) OpenDir(dirName string, context *fuse.Context) ([]fuse.DirEntry, f
 			// silently ignore "gocryptfs.conf" in the top level dir
 			continue
 		}
-		if !fs.args.PlaintextNames && cName == nametransform.DirIVFilename {
-			// silently ignore "gocryptfs.diriv" everywhere if dirIV is enabled
-			continue
-		}
-
 		if fs.args.PlaintextNames {
 			plain = append(plain, cipherEntries[i])
 			continue
 		}
-
+		if cName == nametransform.DirIVFilename {
+			// silently ignore "gocryptfs.diriv" everywhere if dirIV is enabled
+			continue
+		}
 		// Handle long file name
 		isLong := nametransform.LongNameNone
 		if fs.args.LongNames {
@@ -291,8 +289,8 @@ func (fs *FS) OpenDir(dirName string, context *fuse.Context) ([]fuse.DirEntry, f
 		if isLong == nametransform.LongNameContent {
 			cNameLong, err := nametransform.ReadLongName(filepath.Join(cDirAbsPath, cName))
 			if err != nil {
-				tlog.Warn.Printf("Skipping entry %q in dir %q: Could not read .name: %v",
-					cName, cDirName, err)
+				tlog.Warn.Printf("OpenDir %q: invalid entry %q: Could not read .name: %v",
+					cDirName, cName, err)
 				errorCount++
 				continue
 			}
@@ -301,15 +299,15 @@ func (fs *FS) OpenDir(dirName string, context *fuse.Context) ([]fuse.DirEntry, f
 			// ignore "gocryptfs.longname.*.name"
 			continue
 		}
-
 		name, err := fs.nameTransform.DecryptName(cName, cachedIV)
 		if err != nil {
-			tlog.Warn.Printf("Skipping entry %q in dir %q: %s",
-				cName, cDirName, err)
+			tlog.Warn.Printf("OpenDir %q: invalid entry %q: %v",
+				cDirName, cName, err)
 			errorCount++
 			continue
 		}
-
+		// Override the ciphertext name with the plaintext name but reuse the rest
+		// of the structure
 		cipherEntries[i].Name = name
 		plain = append(plain, cipherEntries[i])
 	}
@@ -317,8 +315,8 @@ func (fs *FS) OpenDir(dirName string, context *fuse.Context) ([]fuse.DirEntry, f
 	if errorCount > 0 && len(plain) == 0 {
 		// Don't let the user stare on an empty directory. Report that things went
 		// wrong.
-		tlog.Warn.Printf("All %d entries in directory %q were invalid, returning EIO",
-			errorCount, cDirName)
+		tlog.Warn.Printf("OpenDir %q: all %d entries were invalid, returning EIO",
+			cDirName, errorCount)
 		status = fuse.EIO
 	}
 

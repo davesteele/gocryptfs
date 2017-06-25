@@ -143,6 +143,29 @@ RM:    4.42
 Changelog
 ---------
 
+v1.4, 2017-06-20
+* **Switch to static binary releases**
+  * From gocryptfs v1.4, I will only release statically-built binaries.
+    These support all Linux distributions but cannot use OpenSSL.
+  * OpenSSL is still supported - just compile from source!
+* Add `-force_owner` option to allow files to be presented as owned by a
+  different user or group from the user running gocryptfs. Please see caveats
+  and guidance in the man page before using this functionality.
+* Increase open file limit to 4096 ([#82](https://github.com/rfjakob/gocryptfs/issues/82)).
+* Implement path decryption via ctlsock ([#84](https://github.com/rfjakob/gocryptfs/issues/84)).
+  Previously, decryption was only implemented for reverse mode. Now both
+  normal and reverse mode support both decryption and encryption of
+  paths via ctlsock.
+* Add more specific exit codes for the most common failure modes,
+  documented in [CLI_ABI.md](Documentation/CLI_ABI.md)
+* Reverse mode: make sure hard-linked files always return the same
+  ciphertext (commit 9ecf2d1a3f69e3d995012073afe3fc664bd928f2)
+* Display a shorter, friendlier help text by default.
+* Parallelize file content encryption by splitting data blocks into two
+  threads ([ticket#116](https://github.com/rfjakob/gocryptfs/issues/116))
+* Prefetch random nonces in the background (commit 80516ed3351477793eec882508969b6b29b69b0a)
+* Add `-info` option to pretty-print infos about a filesystem.
+
 v1.3, 2017-04-29
 * **Use HKDF to derive separate keys for GCM and EME**
   * New feature flag: `HKDF` (enabled by default)
@@ -162,7 +185,7 @@ v1.3, 2017-04-29
 * Use stable 64-bit inode numbers in reverse mode
   * This may cause problems for very old 32-bit applications
     that were compiled without Large File Support.
-* Passing "--" now also block "-o" parsing
+* Passing "--" now also blocks "-o" parsing
 
 v1.2.1, 2017-02-26
 * Add an integrated speed test, `gocryptfs -speed`

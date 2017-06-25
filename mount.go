@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"fmt"
 	"log/syslog"
 	"net"
 	"os"
@@ -25,6 +25,7 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend"
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend_reverse"
 	"github.com/rfjakob/gocryptfs/internal/readpassword"
+	"github.com/rfjakob/gocryptfs/internal/syscallcompat"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
@@ -36,14 +37,14 @@ func doMount(args *argContainer) int {
 	args.mountpoint, err = filepath.Abs(flagSet.Arg(1))
 	if err != nil {
 		tlog.Fatal.Printf("Invalid mountpoint: %v", err)
-		os.Exit(ErrExitMountPoint)
+		os.Exit(exitcodes.MountPoint)
 	}
 	// We cannot mount "/home/user/.cipher" at "/home/user" because the mount
 	// will hide ".cipher" also for us.
 	if args.cipherdir == args.mountpoint || strings.HasPrefix(args.cipherdir, args.mountpoint+"/") {
 		tlog.Fatal.Printf("Mountpoint %q would shadow cipherdir %q, this is not supported",
 			args.mountpoint, args.cipherdir)
-		os.Exit(ErrExitMountPoint)
+		os.Exit(exitcodes.MountPoint)
 	}
 	if args.nonempty {
 		err = checkDir(args.mountpoint)
@@ -52,7 +53,7 @@ func doMount(args *argContainer) int {
 	}
 	if err != nil {
 		tlog.Fatal.Printf("Invalid mountpoint: %v", err)
-		os.Exit(ErrExitMountPoint)
+		os.Exit(exitcodes.MountPoint)
 	}
 	// Open control socket early so we can error out before asking the user
 	// for the password
@@ -64,7 +65,7 @@ func doMount(args *argContainer) int {
 		sock, err = net.Listen("unix", args.ctlsock)
 		if err != nil {
 			tlog.Fatal.Printf("ctlsock: %v", err)
-			os.Exit(ErrExitMount)
+			os.Exit(exitcodes.CtlSock)
 		}
 		args._ctlsockFd = sock
 		// Close also deletes the socket file
@@ -107,7 +108,6 @@ func doMount(args *argContainer) int {
 	// Initialize FUSE server
 	srv := initFuseFrontend(masterkey, args, confFile)
 	tlog.Info.Println(tlog.ColorGreen + "Filesystem mounted and ready." + tlog.ColorReset)
-	var paniclog *os.File
 	// We have been forked into the background, as evidenced by the set
 	// "notifypid".
 	if args.notifypid > 0 {
@@ -115,27 +115,13 @@ func doMount(args *argContainer) int {
 		os.Chdir("/")
 		// Switch to syslog
 		if !args.nosyslog {
-			paniclog, err = ioutil.TempFile("", "gocryptfs_paniclog.")
-			if err != nil {
-				tlog.Fatal.Printf("Failed to create gocryptfs_paniclog: %v", err)
-				os.Exit(ErrExitMount)
-			}
 			// Switch all of our logs and the generic logger to syslog
 			tlog.Info.SwitchToSyslog(syslog.LOG_USER | syslog.LOG_INFO)
 			tlog.Debug.SwitchToSyslog(syslog.LOG_USER | syslog.LOG_DEBUG)
 			tlog.Warn.SwitchToSyslog(syslog.LOG_USER | syslog.LOG_WARNING)
 			tlog.SwitchLoggerToSyslog(syslog.LOG_USER | syslog.LOG_WARNING)
-			// Daemons should close all fds (and we don't want to get killed by
-			// SIGPIPE if any of those get closed on the other end)
-			os.Stdin.Close()
-			// Redirect stdout and stderr to /tmp/gocryptfs_paniclog.NNNNNN
-			// instead of closing them so users have a chance to get the
-			// backtrace on a panic.
-			// https://github.com/golang/go/issues/325#issuecomment-66049178
-			syscall.Dup2(int(paniclog.Fd()), 1)
-			syscall.Dup2(int(paniclog.Fd()), 2)
-			// No need for the extra FD anymore, we have it saved in Stderr
-			paniclog.Close()
+			// Daemons should redirect stdin, stdout and stderr
+			redirectStdFds()
 		}
 		// Disconnect from the controlling terminal by creating a new session.
 		// This prevents us from getting SIGINT when the user presses Ctrl-C
@@ -147,26 +133,77 @@ func doMount(args *argContainer) int {
 		// Send SIGUSR1 to our parent
 		sendUsr1(args.notifypid)
 	}
+	// Increase the open file limit to 4096. This is not essential, so do it after
+	// we have switched to syslog and don't bother the user with warnings.
+	setOpenFileLimit()
 	// Wait for SIGINT in the background and unmount ourselves if we get it.
 	// This prevents a dangling "Transport endpoint is not connected"
 	// mountpoint if the user hits CTRL-C.
 	handleSigint(srv, args.mountpoint)
 	// Jump into server loop. Returns when it gets an umount request from the kernel.
 	srv.Serve()
-	// Delete empty paniclogs
-	if paniclog != nil {
-		// The paniclog FD is saved in Stderr
-		fi, err := os.Stderr.Stat()
-		if err != nil {
-			tlog.Warn.Printf("paniclog fstat error: %v", err)
-		} else if fi.Size() > 0 {
-			tlog.Warn.Printf("paniclog at %q is not empty (size %d). Not deleting it.",
-				paniclog.Name(), fi.Size())
-		} else {
-			syscall.Unlink(paniclog.Name())
-		}
-	}
 	return 0
+}
+
+// redirectStdFds redirects stderr and stdout to syslog; stdin to /dev/null
+func redirectStdFds() {
+	// stderr and stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: could not create pipe: %v\n", err)
+		return
+	}
+	tag := fmt.Sprintf("gocryptfs-%d-logger", os.Getpid())
+	cmd := exec.Command("logger", "-t", tag)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = pr
+	err = cmd.Start()
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: could not start logger: %v\n", err)
+	}
+	pr.Close()
+	err = syscallcompat.Dup3(int(pw.Fd()), 1, 0)
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: stdout dup error: %v\n", err)
+	}
+	syscallcompat.Dup3(int(pw.Fd()), 2, 0)
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: stderr dup error: %v\n", err)
+	}
+	pw.Close()
+
+	// stdin
+	nullFd, err := os.Open("/dev/null")
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: could not open /dev/null: %v\n", err)
+		return
+	}
+	err = syscallcompat.Dup3(int(nullFd.Fd()), 0, 0)
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: stdin dup error: %v\n", err)
+	}
+	nullFd.Close()
+}
+
+// setOpenFileLimit tries to increase the open file limit to 4096 (the default hard
+// limit on Linux).
+func setOpenFileLimit() {
+	var lim syscall.Rlimit
+	err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim)
+	if err != nil {
+		tlog.Warn.Printf("Getting RLIMIT_NOFILE failed: %v", err)
+		return
+	}
+	if lim.Cur >= 4096 {
+		return
+	}
+	lim.Cur = 4096
+	err = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &lim)
+	if err != nil {
+		tlog.Warn.Printf("Setting RLIMIT_NOFILE to %+v failed: %v", lim, err)
+		//         %+v output: "{Cur:4097 Max:4096}" ^
+	}
 }
 
 // initFuseFrontend - initialize gocryptfs/fusefrontend
@@ -181,6 +218,11 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	if args.aessiv {
 		cryptoBackend = cryptocore.BackendAESSIV
 	}
+	// forceOwner implies allow_other, as documented.
+	// Set this early, so args.allow_other can be relied on below this point.
+	if args._forceOwner != nil {
+		args.allow_other = true
+	}
 	frontendArgs := fusefrontend.Args{
 		Cipherdir:      args.cipherdir,
 		Masterkey:      key,
@@ -193,6 +235,7 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 		HKDF:           args.hkdf,
 		SerializeReads: args.serialize_reads,
 		ForceDecode:    args.forcedecode,
+		ForceOwner:     args._forceOwner,
 	}
 	// confFile is nil when "-zerokey" or "-masterkey" was used
 	if confFile != nil {
@@ -204,7 +247,7 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 			frontendArgs.CryptoBackend = cryptocore.BackendAESSIV
 		} else if args.reverse {
 			tlog.Fatal.Printf("AES-SIV is required by reverse mode, but not enabled in the config file")
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 	}
 	// If allow_other is set and we run as root, try to give newly created files to
@@ -240,8 +283,11 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 		EntryTimeout:    time.Second,
 	}
 	conn := nodefs.NewFileSystemConnector(pathFs.Root(), fuseOpts)
-	var mOpts fuse.MountOptions
-	mOpts.AllowOther = false
+	mOpts := fuse.MountOptions{
+		// Bigger writes mean fewer calls and better throughput.
+		// Capped to 128KiB on Linux.
+		MaxWrite: 1048576,
+	}
 	if args.allow_other {
 		tlog.Info.Printf(tlog.ColorYellow + "The option \"-allow_other\" is set. Make sure the file " +
 			"permissions protect your data from unwanted access." + tlog.ColorReset)
@@ -282,8 +328,8 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	}
 	srv, err := fuse.NewServer(conn.RawFS(), args.mountpoint, &mOpts)
 	if err != nil {
-		tlog.Fatal.Printf("Mount failed: %v", err)
-		os.Exit(ErrExitMount)
+		tlog.Fatal.Printf("fuse.NewServer failed: %v", err)
+		os.Exit(exitcodes.FuseNewServer)
 	}
 	srv.SetDebug(args.fusedebug)
 
@@ -313,6 +359,6 @@ func handleSigint(srv *fuse.Server, mountpoint string) {
 				cmd.Run()
 			}
 		}
-		os.Exit(1)
+		os.Exit(exitcodes.SigInt)
 	}()
 }

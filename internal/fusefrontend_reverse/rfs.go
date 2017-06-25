@@ -16,6 +16,7 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/cryptocore"
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend"
 	"github.com/rfjakob/gocryptfs/internal/nametransform"
+	"github.com/rfjakob/gocryptfs/internal/pathiv"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
@@ -114,6 +115,9 @@ func (rfs *ReverseFS) GetAttr(relPath string, context *fuse.Context) (*fuse.Attr
 		}
 		var a fuse.Attr
 		a.FromStat(&st)
+		if rfs.args.ForceOwner != nil {
+			a.Owner = *rfs.args.ForceOwner
+		}
 		return &a, fuse.OK
 	}
 	// Handle virtual files (gocryptfs.diriv, *.name)
@@ -135,6 +139,9 @@ func (rfs *ReverseFS) GetAttr(relPath string, context *fuse.Context) (*fuse.Attr
 		}
 		var a fuse.Attr
 		status = f.GetAttr(&a)
+		if rfs.args.ForceOwner != nil {
+			a.Owner = *rfs.args.ForceOwner
+		}
 		return &a, status
 	}
 	// Decrypt path to "plaintext relative path"
@@ -175,6 +182,9 @@ func (rfs *ReverseFS) GetAttr(relPath string, context *fuse.Context) (*fuse.Attr
 		}
 
 		a.Size = uint64(len(linkTarget))
+	}
+	if rfs.args.ForceOwner != nil {
+		a.Owner = *rfs.args.ForceOwner
 	}
 	return &a, fuse.OK
 }
@@ -263,7 +273,7 @@ func (rfs *ReverseFS) OpenDir(cipherPath string, context *fuse.Context) ([]fuse.
 	nVirtual := 1
 
 	// Encrypt names
-	dirIV := derivePathIV(cipherPath, ivPurposeDirIV)
+	dirIV := pathiv.Derive(cipherPath, pathiv.PurposeDirIV)
 	for i := range entries {
 		var cName string
 		// ".gocryptfs.reverse.conf" in the root directory is mapped to "gocryptfs.conf"
@@ -305,7 +315,7 @@ func (rfs *ReverseFS) Readlink(cipherPath string, context *fuse.Context) (string
 	if rfs.args.PlaintextNames {
 		return plainTarget, fuse.OK
 	}
-	nonce := derivePathIV(cipherPath, ivPurposeSymlinkIV)
+	nonce := pathiv.Derive(cipherPath, pathiv.PurposeSymlinkIV)
 	// Symlinks are encrypted like file contents and base64-encoded
 	cBinTarget := rfs.contentEnc.EncryptBlockNonce([]byte(plainTarget), 0, nil, nonce)
 	cTarget := rfs.nameTransform.B64.EncodeToString(cBinTarget)

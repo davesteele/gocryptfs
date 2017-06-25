@@ -1,6 +1,7 @@
 package nametransform
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -46,6 +47,9 @@ func ReadDirIVAt(dirfd *os.File) (iv []byte, err error) {
 	return fdReadDirIV(fd)
 }
 
+// allZeroDirIV is preallocated to quickly check if the data read from disk is all zero
+var allZeroDirIV = make([]byte, DirIVLen)
+
 // fdReadDirIV reads and verifies the DirIV from an opened gocryptfs.diriv file.
 func fdReadDirIV(fd *os.File) (iv []byte, err error) {
 	// We want to detect if the file is bigger than DirIVLen, so
@@ -59,6 +63,10 @@ func fdReadDirIV(fd *os.File) (iv []byte, err error) {
 	iv = iv[0:n]
 	if len(iv) != DirIVLen {
 		tlog.Warn.Printf("ReadDirIVAt: wanted %d bytes, got %d. Returning EINVAL.", DirIVLen, len(iv))
+		return nil, syscall.EINVAL
+	}
+	if bytes.Equal(iv, allZeroDirIV) {
+		tlog.Warn.Printf("ReadDirIVAt: diriv is all-zero. Returning EINVAL.")
 		return nil, syscall.EINVAL
 	}
 	return iv, nil
@@ -90,7 +98,8 @@ func WriteDirIV(dir string) error {
 	return nil
 }
 
-// EncryptPathDirIV - encrypt relative plaintext path using EME with DirIV.
+// EncryptPathDirIV - encrypt relative plaintext path "plainPath" using EME with
+// DirIV. "rootDir" is the backing storage root directory.
 // Components that are longer than 255 bytes are hashed if be.longnames == true.
 func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (cipherPath string, err error) {
 	// Empty string means root directory
@@ -103,7 +112,8 @@ func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (cip
 	if len(baseName) > syscall.NAME_MAX {
 		return "", syscall.ENAMETOOLONG
 	}
-	// Check if the DirIV is cached
+	// Check if the DirIV is cached. This catches the case of the user iterating
+	// over files in a directory pretty well.
 	parentDir := filepath.Dir(plainPath)
 	iv, cParentDir := be.DirIVCache.lookup(parentDir)
 	if iv != nil {
@@ -114,10 +124,27 @@ func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (cip
 		cipherPath = filepath.Join(cParentDir, cBaseName)
 		return cipherPath, nil
 	}
-	// Not cached - walk the directory tree
-	var wd = rootDir
-	var encryptedNames []string
+	// We have to walk the directory tree, in the worst case starting at the root
+	// directory.
+	wd := rootDir
 	plainNames := strings.Split(plainPath, "/")
+	// So the DirIV we need is not cached. But maybe one level higher is
+	// cached. Then we can skip a few items in the directory walk.
+	// The catches the case of walking directories recursively.
+	parentDir2 := filepath.Dir(parentDir)
+	iv, cParentDir = be.DirIVCache.lookup(parentDir2)
+	if iv != nil {
+		parentDirBase := filepath.Base(parentDir)
+		cBaseName := be.EncryptName(parentDirBase, iv)
+		if be.longNames && len(cBaseName) > syscall.NAME_MAX {
+			cBaseName = be.HashLongName(cBaseName)
+		}
+		wd = filepath.Join(wd, cParentDir, cBaseName)
+		cipherPath = filepath.Join(cParentDir, cBaseName)
+		skip := len(strings.Split(cipherPath, "/"))
+		plainNames = plainNames[skip:]
+	}
+	// Walk the directory tree starting at "wd"
 	for _, plainName := range plainNames {
 		iv, err = ReadDirIV(wd)
 		if err != nil {
@@ -127,10 +154,9 @@ func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (cip
 		if be.longNames && len(encryptedName) > syscall.NAME_MAX {
 			encryptedName = be.HashLongName(encryptedName)
 		}
-		encryptedNames = append(encryptedNames, encryptedName)
+		cipherPath = filepath.Join(cipherPath, encryptedName)
 		wd = filepath.Join(wd, encryptedName)
 	}
-	cipherPath = filepath.Join(encryptedNames...)
 	// Cache the final DirIV
 	cParentDir = filepath.Dir(cipherPath)
 	be.DirIVCache.store(parentDir, iv, cParentDir)

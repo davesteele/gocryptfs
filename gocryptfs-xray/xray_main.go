@@ -7,13 +7,18 @@ import (
 	"io"
 	"os"
 
+	"github.com/rfjakob/gocryptfs/internal/configfile"
 	"github.com/rfjakob/gocryptfs/internal/contentenc"
 	"github.com/rfjakob/gocryptfs/internal/cryptocore"
+	"github.com/rfjakob/gocryptfs/internal/exitcodes"
+	"github.com/rfjakob/gocryptfs/internal/readpassword"
+	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
 const (
 	ivLen     = contentenc.DefaultIVBits / 8
 	blockSize = contentenc.DefaultBS + ivLen + cryptocore.AuthTagLen
+	myName    = "gocryptfs-xray"
 )
 
 func errExit(err error) {
@@ -27,17 +32,44 @@ func prettyPrintHeader(h *contentenc.FileHeader) {
 }
 
 func main() {
+	dumpmasterkey := flag.Bool("dumpmasterkey", false, "Decrypt and dump the master key")
 	flag.Parse()
 	if flag.NArg() != 1 {
-		fmt.Printf("Usage: xray FILE\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS] FILE\n"+
+			"\n"+
+			"Options:\n", myName)
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\n"+
+			"Examples:\n"+
+			"  gocryptfs-xray myfs/mCXnISiv7nEmyc0glGuhTQ\n"+
+			"  gocryptfs-xray -dumpmasterkey myfs/gocryptfs.conf\n")
 		os.Exit(1)
 	}
-	f := flag.Arg(0)
-	fd, err := os.Open(f)
+	fn := flag.Arg(0)
+	fd, err := os.Open(fn)
 	if err != nil {
 		errExit(err)
 	}
+	defer fd.Close()
+	if *dumpmasterkey {
+		dumpMasterKey(fn)
+	} else {
+		inspectCiphertext(fd)
+	}
+}
 
+func dumpMasterKey(fn string) {
+	tlog.Info.Enabled = false
+	pw := readpassword.Once("")
+	masterkey, _, err := configfile.LoadConfFile(fn, pw)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		exitcodes.Exit(err)
+	}
+	fmt.Println(hex.EncodeToString(masterkey))
+}
+
+func inspectCiphertext(fd *os.File) {
 	headerBytes := make([]byte, contentenc.HeaderLen)
 	n, err := fd.ReadAt(headerBytes, 0)
 	if err == io.EOF && n == 0 {

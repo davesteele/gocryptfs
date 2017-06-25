@@ -7,52 +7,33 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"runtime/trace"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/hanwen/go-fuse/fuse"
 
 	"github.com/rfjakob/gocryptfs/internal/configfile"
 	"github.com/rfjakob/gocryptfs/internal/contentenc"
+	"github.com/rfjakob/gocryptfs/internal/exitcodes"
 	"github.com/rfjakob/gocryptfs/internal/readpassword"
 	"github.com/rfjakob/gocryptfs/internal/speed"
 	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
-// Exit codes
-const (
-	ErrExitUsage      = 1
-	ErrExitMount      = 3
-	ErrExitCipherDir  = 6
-	ErrExitInit       = 7
-	ErrExitLoadConf   = 8
-	ErrExitMountPoint = 10
-)
-
-const pleaseBuildBash = "[not set - please compile using ./build.bash]"
-
 // GitVersion is the gocryptfs version according to git, set by build.bash
-var GitVersion = pleaseBuildBash
+var GitVersion = "[GitVersion not set - please compile using ./build.bash]"
 
 // GitVersionFuse is the go-fuse library version, set by build.bash
-var GitVersionFuse = pleaseBuildBash
+var GitVersionFuse = "[GitVersionFuse not set - please compile using ./build.bash]"
 
 // BuildTime is the Unix timestamp, set by build.bash
 var BuildTime = "0"
 
-func usageText() {
-	printVersion()
-	fmt.Printf(`
-Usage: %s -init|-passwd [OPTIONS] CIPHERDIR
-  or   %s [OPTIONS] CIPHERDIR MOUNTPOINT [-o COMMA-SEPARATED-OPTIONS]
-
-Options:
-`, tlog.ProgramName, tlog.ProgramName)
-
-	flagSet.PrintDefaults()
-	fmt.Print(`  --
-    	Stop option parsing
-`)
-}
+// raceDetector is set to true by race.go if we are compiled with "go build -race"
+var raceDetector bool
 
 // loadConfig loads the config file "args.config", prompting the user for the password
 func loadConfig(args *argContainer) (masterkey []byte, confFile *configfile.ConfFile, err error) {
@@ -60,7 +41,7 @@ func loadConfig(args *argContainer) (masterkey []byte, confFile *configfile.Conf
 	fd, err := os.Open(args.config)
 	if err != nil {
 		tlog.Fatal.Printf("Cannot open config file: %v", err)
-		return nil, nil, err
+		return nil, nil, exitcodes.NewErr(err.Error(), exitcodes.OpenConf)
 	}
 	fd.Close()
 	// The user has passed the master key (probably because he forgot the
@@ -84,7 +65,7 @@ func loadConfig(args *argContainer) (masterkey []byte, confFile *configfile.Conf
 func changePassword(args *argContainer) {
 	masterkey, confFile, err := loadConfig(args)
 	if err != nil {
-		os.Exit(ErrExitLoadConf)
+		exitcodes.Exit(err)
 	}
 	tlog.Info.Println("Please enter your new password.")
 	newPw := readpassword.Twice(args.extpass)
@@ -95,7 +76,7 @@ func changePassword(args *argContainer) {
 		err = os.Link(args.config, bak)
 		if err != nil {
 			tlog.Fatal.Printf("Could not create backup file: %v", err)
-			os.Exit(ErrExitInit)
+			os.Exit(exitcodes.Init)
 		}
 		tlog.Info.Printf(tlog.ColorGrey+
 			"A copy of the old config file has been created at %q.\n"+
@@ -105,7 +86,7 @@ func changePassword(args *argContainer) {
 	err = confFile.WriteFile()
 	if err != nil {
 		tlog.Fatal.Println(err)
-		os.Exit(ErrExitInit)
+		os.Exit(exitcodes.WriteConf)
 	}
 	tlog.Info.Printf(tlog.ColorGreen + "Password changed." + tlog.ColorReset)
 	os.Exit(0)
@@ -124,12 +105,19 @@ func printVersion() {
 		buildFlags = " without_openssl"
 	}
 	built := fmt.Sprintf("%s %s", humanTime, runtime.Version())
+	if raceDetector {
+		built += " -race"
+	}
 	fmt.Printf("%s %s%s; go-fuse %s; %s\n",
 		tlog.ProgramName, GitVersion, buildFlags, GitVersionFuse, built)
 }
 
 func main() {
-	runtime.GOMAXPROCS(4)
+	mxp := runtime.GOMAXPROCS(0)
+	if mxp < 4 {
+		// On a 2-core machine, setting maxprocs to 4 gives 10% better performance
+		runtime.GOMAXPROCS(4)
+	}
 	var err error
 	// Parse all command-line options (i.e. arguments starting with "-")
 	// into "args". Path arguments are parsed below.
@@ -150,6 +138,11 @@ func main() {
 		printVersion()
 		os.Exit(0)
 	}
+	// "-hh"
+	if args.hh {
+		helpLong()
+		os.Exit(0)
+	}
 	// "-speed"
 	if args.speed {
 		speed.Run()
@@ -165,11 +158,11 @@ func main() {
 		err = checkDir(args.cipherdir)
 		if err != nil {
 			tlog.Fatal.Printf("Invalid cipherdir: %v", err)
-			os.Exit(ErrExitCipherDir)
+			os.Exit(exitcodes.CipherDir)
 		}
 	} else {
-		usageText()
-		os.Exit(ErrExitUsage)
+		helpShort()
+		os.Exit(exitcodes.Usage)
 	}
 	// "-q"
 	if args.quiet {
@@ -184,7 +177,7 @@ func main() {
 		args.config, err = filepath.Abs(args.config)
 		if err != nil {
 			tlog.Fatal.Printf("Invalid \"-config\" setting: %v", err)
-			os.Exit(ErrExitInit)
+			os.Exit(exitcodes.Init)
 		}
 		tlog.Info.Printf("Using config file at custom location %s", args.config)
 		args._configCustom = true
@@ -193,6 +186,26 @@ func main() {
 	} else {
 		args.config = filepath.Join(args.cipherdir, configfile.ConfDefaultName)
 	}
+	// "-force_owner"
+	if args.force_owner != "" {
+		var uidNum, gidNum int64
+		ownerPieces := strings.SplitN(args.force_owner, ":", 2)
+		if len(ownerPieces) != 2 {
+			tlog.Fatal.Printf("force_owner must be in form UID:GID")
+			os.Exit(exitcodes.Usage)
+		}
+		uidNum, err = strconv.ParseInt(ownerPieces[0], 0, 32)
+		if err != nil || uidNum < 0 {
+			tlog.Fatal.Printf("force_owner: Unable to parse UID %v as positive integer", ownerPieces[0])
+			os.Exit(exitcodes.Usage)
+		}
+		gidNum, err = strconv.ParseInt(ownerPieces[1], 0, 32)
+		if err != nil || gidNum < 0 {
+			tlog.Fatal.Printf("force_owner: Unable to parse GID %v as positive integer", ownerPieces[1])
+			os.Exit(exitcodes.Usage)
+		}
+		args._forceOwner = &fuse.Owner{Uid: uint32(uidNum), Gid: uint32(gidNum)}
+	}
 	// "-cpuprofile"
 	if args.cpuprofile != "" {
 		tlog.Info.Printf("Writing CPU profile to %s", args.cpuprofile)
@@ -200,9 +213,13 @@ func main() {
 		f, err = os.Create(args.cpuprofile)
 		if err != nil {
 			tlog.Fatal.Println(err)
-			os.Exit(ErrExitInit)
+			os.Exit(exitcodes.Profiler)
 		}
-		pprof.StartCPUProfile(f)
+		err = pprof.StartCPUProfile(f)
+		if err != nil {
+			tlog.Fatal.Println(err)
+			os.Exit(exitcodes.Profiler)
+		}
 		defer pprof.StopCPUProfile()
 	}
 	// "-memprofile"
@@ -212,7 +229,7 @@ func main() {
 		f, err = os.Create(args.memprofile)
 		if err != nil {
 			tlog.Fatal.Println(err)
-			os.Exit(ErrExitInit)
+			os.Exit(exitcodes.Profiler)
 		}
 		defer func() {
 			pprof.WriteHeapProfile(f)
@@ -220,7 +237,22 @@ func main() {
 			return
 		}()
 	}
-	if args.cpuprofile != "" || args.memprofile != "" {
+	// "-trace"
+	if args.trace != "" {
+		tlog.Info.Printf("Writing execution trace to %s", args.trace)
+		f, err := os.Create(args.trace)
+		if err != nil {
+			tlog.Fatal.Println(err)
+			os.Exit(exitcodes.Profiler)
+		}
+		err = trace.Start(f)
+		if err != nil {
+			tlog.Fatal.Println(err)
+			os.Exit(exitcodes.Profiler)
+		}
+		defer trace.Stop()
+	}
+	if args.cpuprofile != "" || args.memprofile != "" || args.trace != "" {
 		tlog.Info.Printf("Note: You must unmount gracefully, otherwise the profile file(s) will stay empty!\n")
 	}
 	// "-openssl"
@@ -229,12 +261,24 @@ func main() {
 	} else {
 		tlog.Debug.Printf("OpenSSL enabled")
 	}
-	// Operation flags: -init or -passwd; otherwise: mount
+	// Operation flags
+	if args.info && args.init || args.info && args.passwd || args.passwd && args.init {
+		tlog.Fatal.Printf("At most one of -info, -init, -passwd is allowed")
+		os.Exit(exitcodes.Usage)
+	}
+	// "-info"
+	if args.info {
+		if flagSet.NArg() > 1 {
+			tlog.Fatal.Printf("Usage: %s -info CIPHERDIR", tlog.ProgramName)
+			os.Exit(exitcodes.Usage)
+		}
+		info(args.config) // does not return
+	}
 	// "-init"
 	if args.init {
 		if flagSet.NArg() > 1 {
 			tlog.Fatal.Printf("Usage: %s -init [OPTIONS] CIPHERDIR", tlog.ProgramName)
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 		initDir(&args) // does not return
 	}
@@ -242,7 +286,7 @@ func main() {
 	if args.passwd {
 		if flagSet.NArg() > 1 {
 			tlog.Fatal.Printf("Usage: %s -passwd [OPTIONS] CIPHERDIR", tlog.ProgramName)
-			os.Exit(ErrExitUsage)
+			os.Exit(exitcodes.Usage)
 		}
 		changePassword(&args) // does not return
 	}
@@ -252,7 +296,7 @@ func main() {
 		tlog.Info.Printf("Wrong number of arguments (have %d, want 2). You passed: %s",
 			flagSet.NArg(), prettyArgs)
 		tlog.Fatal.Printf("Usage: %s [OPTIONS] CIPHERDIR MOUNTPOINT [-o COMMA-SEPARATED-OPTIONS]", tlog.ProgramName)
-		os.Exit(ErrExitUsage)
+		os.Exit(exitcodes.Usage)
 	}
 	ret := doMount(&args)
 	if ret != 0 {
