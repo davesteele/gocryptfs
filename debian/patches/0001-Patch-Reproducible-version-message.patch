@@ -1,18 +1,16 @@
 From: David Steele <steele@debian.org>
-Date: Fri, 30 Sep 2016 21:21:35 -0400
-Subject: Fix the help message
+Date: Sun, 25 Jun 2017 19:30:38 -0400
+Subject: Patch: Reproducible version message
 
-The help message had some escapes normally filled in by the bash build
-script. Remove them.
 ---
- main.go | 14 ++------------
- 1 file changed, 2 insertions(+), 12 deletions(-)
+ main.go | 13 ++-----------
+ 1 file changed, 2 insertions(+), 11 deletions(-)
 
 diff --git a/main.go b/main.go
-index 9301ae1..1ce8572 100644
+index 13514c1..434ec1c 100644
 --- a/main.go
 +++ b/main.go
-@@ -114,18 +114,8 @@ func changePassword(args *argContainer) {
+@@ -95,21 +95,12 @@ func changePassword(args *argContainer) {
  // printVersion prints a version string like this:
  // gocryptfs v0.12-36-ge021b9d-dirty; go-fuse a4c968c; 2016-07-03 go1.6.2
  func printVersion() {
@@ -21,15 +19,18 @@ index 9301ae1..1ce8572 100644
 -		t := time.Unix(i, 0).UTC()
 -		humanTime = fmt.Sprintf("%d-%02d-%02d", t.Year(), t.Month(), t.Day())
 -	}
--	buildFlags := ""
--	if stupidgcm.BuiltWithoutOpenssl {
--		buildFlags = " without_openssl"
--	}
+ 	buildFlags := ""
+ 	if stupidgcm.BuiltWithoutOpenssl {
+ 		buildFlags = " without_openssl"
+ 	}
 -	built := fmt.Sprintf("%s %s", humanTime, runtime.Version())
+-	if raceDetector {
+-		built += " -race"
+-	}
 -	fmt.Printf("%s %s%s; go-fuse %s; %s\n",
 -		tlog.ProgramName, GitVersion, buildFlags, GitVersionFuse, built)
-+	fmt.Printf("%s\n",
-+		tlog.ProgramName)
++	fmt.Printf("%s %s%s; go-fuse %s\n",
++		tlog.ProgramName, GitVersion, buildFlags, GitVersionFuse)
  }
  
  func main() {

@@ -1,4 +1,2 @@
-Fix-the-help-message
-unused-imports
-dup3
-0005-Remove-fusermount-tests-for-autopkgtest.patch
+0001-Patch-Reproducible-version-message.patch
+0002-Fix-new-go-syncmap-path.patch
