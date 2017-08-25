@@ -1,3 +1,5 @@
+// +build !without_openssl
+
 // We compare against Go's built-in GCM implementation. Since stupidgcm only
 // supports 128-bit IVs and Go only supports that from 1.5 onward, we cannot
 // run these tests on older Go versions.
@@ -69,6 +71,83 @@ func TestEncryptDecrypt(t *testing.T) {
 		// Plaintext must be identical to Go GCM
 		if !bytes.Equal(sOut2, gOut2) {
 			t.Fatalf("Compare failed for decryption, size %d", i)
+		}
+	}
+}
+
+// Seal re-uses the "dst" buffer it is large enough.
+// Check that this works correctly by testing different "dst" capacities from
+// 5000 to 16 and "in" lengths from 1 to 5000.
+func TestInplaceSeal(t *testing.T) {
+	key := randBytes(32)
+	sGCM := New(key, false)
+	authData := randBytes(24)
+	iv := randBytes(16)
+
+	gAES, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gGCM, err := cipher.NewGCMWithNonceSize(gAES, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	max := 5016
+	// Check all block sizes from 1 to 5000
+	for i := 1; i < max-16; i++ {
+		in := make([]byte, i)
+		dst := make([]byte, max-i)
+		dst = dst[:16]
+
+		sOut := sGCM.Seal(dst, iv, in, authData)
+		dst2 := make([]byte, 16)
+		gOut := gGCM.Seal(dst2, iv, in, authData)
+
+		// Ciphertext must be identical to Go GCM
+		if !bytes.Equal(sOut, gOut) {
+			t.Fatalf("Compare failed for encryption, size %d", i)
+			t.Log("sOut:")
+			t.Log("\n" + hex.Dump(sOut))
+			t.Log("gOut:")
+			t.Log("\n" + hex.Dump(gOut))
+		}
+	}
+}
+
+// Open re-uses the "dst" buffer it is large enough.
+// Check that this works correctly by testing different "dst" capacities from
+// 5000 to 16 and "in" lengths from 1 to 5000.
+func TestInplaceOpen(t *testing.T) {
+	key := randBytes(32)
+	sGCM := New(key, false)
+	authData := randBytes(24)
+	iv := randBytes(16)
+
+	gAES, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gGCM, err := cipher.NewGCMWithNonceSize(gAES, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	max := 5016
+	// Check all block sizes from 1 to 5000
+	for i := 1; i < max-16; i++ {
+		in := make([]byte, i)
+
+		gCiphertext := gGCM.Seal(iv, iv, in, authData)
+
+		dst := make([]byte, max-i)
+		// sPlaintext ... stupidgcm plaintext
+		sPlaintext, err := sGCM.Open(dst[:0], iv, gCiphertext[16:], authData)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Plaintext must be identical to Go GCM
+		if !bytes.Equal(in, sPlaintext) {
+			t.Fatalf("Compare failed, i=%d", i)
 		}
 	}
 }

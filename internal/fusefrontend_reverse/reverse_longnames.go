@@ -86,7 +86,7 @@ func (rfs *ReverseFS) newNameFile(relPath string) (nodefs.File, fuse.Status) {
 	dotName := filepath.Base(relPath)                                    // gocryptfs.longname.XYZ.name
 	longname := dotName[:len(dotName)-len(nametransform.LongNameSuffix)] // gocryptfs.longname.XYZ
 	// cipher directory
-	cDir := saneDir(relPath)
+	cDir := nametransform.Dir(relPath)
 	// plain directory
 	pDir, err := rfs.decryptPath(cDir)
 	if err != nil {
@@ -100,5 +100,5 @@ func (rfs *ReverseFS) newNameFile(relPath string) (nodefs.File, fuse.Status) {
 	}
 	content := []byte(rfs.nameTransform.EncryptName(pName, dirIV))
 	parentFile := filepath.Join(rfs.args.Cipherdir, pDir, pName)
-	return rfs.newVirtualFile(content, parentFile)
+	return rfs.newVirtualFile(content, parentFile, inoBaseNameFile)
 }

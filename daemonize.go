@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/rfjakob/gocryptfs/internal/exitcodes"
+	"github.com/rfjakob/gocryptfs/internal/syscallcompat"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
@@ -51,4 +52,48 @@ func forkChild() int {
 	}
 	// The child exited with 0 - let's do the same.
 	return 0
+}
+
+// redirectStdFds redirects stderr and stdout to syslog; stdin to /dev/null
+func redirectStdFds() {
+	// Create a pipe pair "pw" -> "pr" and start logger reading from "pr".
+	// We do it ourselves instead of using StdinPipe() because we need access
+	// to the fd numbers.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: could not create pipe: %v\n", err)
+		return
+	}
+	tag := fmt.Sprintf("gocryptfs-%d-logger", os.Getpid())
+	cmd := exec.Command("logger", "-t", tag)
+	cmd.Stdin = pr
+	err = cmd.Start()
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: could not start logger: %v\n", err)
+		return
+	}
+	// The logger now reads on "pr". We can close it.
+	pr.Close()
+	// Redirect stout and stderr to "pw".
+	err = syscallcompat.Dup3(int(pw.Fd()), 1, 0)
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: stdout dup error: %v\n", err)
+	}
+	syscallcompat.Dup3(int(pw.Fd()), 2, 0)
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: stderr dup error: %v\n", err)
+	}
+	// Our stout and stderr point to "pw". We can close the extra copy.
+	pw.Close()
+	// Redirect stdin to /dev/null
+	nullFd, err := os.Open("/dev/null")
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: could not open /dev/null: %v\n", err)
+		return
+	}
+	err = syscallcompat.Dup3(int(nullFd.Fd()), 0, 0)
+	if err != nil {
+		tlog.Warn.Printf("redirectStdFds: stdin dup error: %v\n", err)
+	}
+	nullFd.Close()
 }

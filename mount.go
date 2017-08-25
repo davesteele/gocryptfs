@@ -2,14 +2,15 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/syslog"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -25,7 +26,6 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend"
 	"github.com/rfjakob/gocryptfs/internal/fusefrontend_reverse"
 	"github.com/rfjakob/gocryptfs/internal/readpassword"
-	"github.com/rfjakob/gocryptfs/internal/syscallcompat"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
@@ -140,50 +140,12 @@ func doMount(args *argContainer) int {
 	// This prevents a dangling "Transport endpoint is not connected"
 	// mountpoint if the user hits CTRL-C.
 	handleSigint(srv, args.mountpoint)
+	// Return memory that was allocated for scrypt (64M by default!) and other
+	// stuff that is no longer needed to the OS
+	debug.FreeOSMemory()
 	// Jump into server loop. Returns when it gets an umount request from the kernel.
 	srv.Serve()
 	return 0
-}
-
-// redirectStdFds redirects stderr and stdout to syslog; stdin to /dev/null
-func redirectStdFds() {
-	// stderr and stdout
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		tlog.Warn.Printf("redirectStdFds: could not create pipe: %v\n", err)
-		return
-	}
-	tag := fmt.Sprintf("gocryptfs-%d-logger", os.Getpid())
-	cmd := exec.Command("logger", "-t", tag)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = pr
-	err = cmd.Start()
-	if err != nil {
-		tlog.Warn.Printf("redirectStdFds: could not start logger: %v\n", err)
-	}
-	pr.Close()
-	err = syscallcompat.Dup3(int(pw.Fd()), 1, 0)
-	if err != nil {
-		tlog.Warn.Printf("redirectStdFds: stdout dup error: %v\n", err)
-	}
-	syscallcompat.Dup3(int(pw.Fd()), 2, 0)
-	if err != nil {
-		tlog.Warn.Printf("redirectStdFds: stderr dup error: %v\n", err)
-	}
-	pw.Close()
-
-	// stdin
-	nullFd, err := os.Open("/dev/null")
-	if err != nil {
-		tlog.Warn.Printf("redirectStdFds: could not open /dev/null: %v\n", err)
-		return
-	}
-	err = syscallcompat.Dup3(int(nullFd.Fd()), 0, 0)
-	if err != nil {
-		tlog.Warn.Printf("redirectStdFds: stdin dup error: %v\n", err)
-	}
-	nullFd.Close()
 }
 
 // setOpenFileLimit tries to increase the open file limit to 4096 (the default hard
@@ -208,7 +170,7 @@ func setOpenFileLimit() {
 
 // initFuseFrontend - initialize gocryptfs/fusefrontend
 // Calls os.Exit on errors
-func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfFile) *fuse.Server {
+func initFuseFrontend(masterkey []byte, args *argContainer, confFile *configfile.ConfFile) *fuse.Server {
 	// Reconciliate CLI and config file arguments into a fusefrontend.Args struct
 	// that is passed to the filesystem implementation
 	cryptoBackend := cryptocore.BackendGoGCM
@@ -225,7 +187,6 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	}
 	frontendArgs := fusefrontend.Args{
 		Cipherdir:      args.cipherdir,
-		Masterkey:      key,
 		PlaintextNames: args.plaintextnames,
 		LongNames:      args.longnames,
 		CryptoBackend:  cryptoBackend,
@@ -260,13 +221,18 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	var finalFs pathfs.FileSystem
 	var ctlSockBackend ctlsock.Interface
 	if args.reverse {
-		fs := fusefrontend_reverse.NewFS(frontendArgs)
+		fs := fusefrontend_reverse.NewFS(masterkey, frontendArgs)
 		finalFs = fs
 		ctlSockBackend = fs
 	} else {
-		fs := fusefrontend.NewFS(frontendArgs)
+		fs := fusefrontend.NewFS(masterkey, frontendArgs)
 		finalFs = fs
 		ctlSockBackend = fs
+	}
+	// fusefrontend / fusefrontend_reverse have initialized their crypto with
+	// derived keys (HKDF), we can purge the master key from memory.
+	for i := range masterkey {
+		masterkey[i] = 0
 	}
 	// We have opened the socket early so that we cannot fail here after
 	// asking the user for the password
@@ -286,7 +252,7 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	mOpts := fuse.MountOptions{
 		// Bigger writes mean fewer calls and better throughput.
 		// Capped to 128KiB on Linux.
-		MaxWrite: 1048576,
+		MaxWrite: fuse.MAX_KERNEL_WRITE,
 	}
 	if args.allow_other {
 		tlog.Info.Printf(tlog.ColorYellow + "The option \"-allow_other\" is set. Make sure the file " +
@@ -314,6 +280,13 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	if args.reverse {
 		mOpts.Name += "-reverse"
 	}
+
+	// Add a volume name if running osxfuse. Otherwise the Finder will show it as
+	// something like "osxfuse Volume 0 (gocryptfs)".
+	if runtime.GOOS == "darwin" {
+		mOpts.Options = append(mOpts.Options, "volname="+path.Base(args.mountpoint))
+	}
+
 	// The kernel enforces read-only operation, we just have to pass "ro".
 	// Reverse mounts are always read-only.
 	if args.ro || args.reverse {
@@ -329,6 +302,9 @@ func initFuseFrontend(key []byte, args *argContainer, confFile *configfile.ConfF
 	srv, err := fuse.NewServer(conn.RawFS(), args.mountpoint, &mOpts)
 	if err != nil {
 		tlog.Fatal.Printf("fuse.NewServer failed: %v", err)
+		if runtime.GOOS == "darwin" {
+			tlog.Info.Printf("Maybe you should run: /Library/Filesystems/osxfuse.fs/Contents/Resources/load_osxfuse")
+		}
 		os.Exit(exitcodes.FuseNewServer)
 	}
 	srv.SetDebug(args.fusedebug)

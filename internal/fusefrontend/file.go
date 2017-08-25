@@ -132,7 +132,8 @@ func (f *file) createHeader() (fileID []byte, err error) {
 	return h.ID, err
 }
 
-// doRead - returns "length" plaintext bytes from plaintext offset "off".
+// doRead - read "length" plaintext bytes from plaintext offset "off" and append
+// to "dst".
 // Arguments "length" and "off" do not have to be block-aligned.
 //
 // doRead reads the corresponding ciphertext blocks from disk, decrypts them and
@@ -140,7 +141,7 @@ func (f *file) createHeader() (fileID []byte, err error) {
 //
 // Called by Read() for normal reading,
 // by Write() and Truncate() for Read-Modify-Write
-func (f *file) doRead(off uint64, length uint64) ([]byte, fuse.Status) {
+func (f *file) doRead(dst []byte, off uint64, length uint64) ([]byte, fuse.Status) {
 	// Make sure we have the file ID.
 	f.fileTableEntry.HeaderLock.RLock()
 	if f.fileTableEntry.ID == nil {
@@ -171,13 +172,19 @@ func (f *file) doRead(off uint64, length uint64) ([]byte, fuse.Status) {
 	skip := blocks[0].Skip
 	tlog.Debug.Printf("JointCiphertextRange(%d, %d) -> %d, %d, %d", off, length, alignedOffset, alignedLength, skip)
 
-	ciphertext := make([]byte, int(alignedLength))
+	ciphertext := f.fs.contentEnc.CReqPool.Get()
+	ciphertext = ciphertext[:int(alignedLength)]
 	n, err := f.fd.ReadAt(ciphertext, int64(alignedOffset))
 	// We don't care if the file ID changes after we have read the data. Drop the lock.
 	f.fileTableEntry.HeaderLock.RUnlock()
 	if err != nil && err != io.EOF {
 		tlog.Warn.Printf("read: ReadAt: %s", err.Error())
 		return nil, fuse.ToStatus(err)
+	}
+	// The ReadAt came back empty. We can skip all the decryption and return early.
+	if n == 0 {
+		f.fs.contentEnc.CReqPool.Put(ciphertext)
+		return dst, fuse.OK
 	}
 	// Truncate ciphertext buffer down to actually read bytes
 	ciphertext = ciphertext[0:n]
@@ -187,6 +194,7 @@ func (f *file) doRead(off uint64, length uint64) ([]byte, fuse.Status) {
 
 	// Decrypt it
 	plaintext, err := f.contentEnc.DecryptBlocks(ciphertext, firstBlockNo, fileID)
+	f.fs.contentEnc.CReqPool.Put(ciphertext)
 	if err != nil {
 		if f.fs.args.ForceDecode && err == stupidgcm.ErrAuth {
 			// We do not have the information which block was corrupt here anymore,
@@ -211,6 +219,9 @@ func (f *file) doRead(off uint64, length uint64) ([]byte, fuse.Status) {
 	}
 	// else: out stays empty, file was smaller than the requested offset
 
+	out = append(dst, out...)
+	f.fs.contentEnc.PReqPool.Put(plaintext)
+
 	return out, fuse.OK
 }
 
@@ -225,7 +236,7 @@ func (f *file) Read(buf []byte, off int64) (resultData fuse.ReadResult, code fus
 		serialize_reads.Wait(off, len(buf))
 	}
 
-	out, status := f.doRead(uint64(off), uint64(len(buf)))
+	out, status := f.doRead(buf[:0], uint64(off), uint64(len(buf)))
 
 	if f.fs.args.SerializeReads {
 		serialize_reads.Done()
@@ -282,7 +293,7 @@ func (f *file) doWrite(data []byte, off int64) (uint32, fuse.Status) {
 		// Incomplete block -> Read-Modify-Write
 		if b.IsPartial() {
 			// Read
-			oldData, status := f.doRead(b.BlockPlainOff(), f.contentEnc.PlainBS())
+			oldData, status := f.doRead(nil, b.BlockPlainOff(), f.contentEnc.PlainBS())
 			if status != fuse.OK {
 				tlog.Warn.Printf("ino%d fh%d: RMW read failed: %s", f.qIno.Ino, f.intFd(), status.String())
 				return 0, status
@@ -311,6 +322,8 @@ func (f *file) doWrite(data []byte, off int64) (uint32, fuse.Status) {
 	}
 	// Write
 	_, err = f.fd.WriteAt(ciphertext, cOff)
+	// Return memory to CReqPool
+	f.fs.contentEnc.CReqPool.Put(ciphertext)
 	if err != nil {
 		tlog.Warn.Printf("doWrite: Write failed: %s", err.Error())
 		return 0, fuse.ToStatus(err)

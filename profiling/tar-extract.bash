@@ -2,6 +2,9 @@
 
 cd "$(dirname "$0")"
 
+# Download /tmp/linux-3.0.tar.gz
+../tests/dl-linux-tarball.bash
+
 T=$(mktemp -d)
 mkdir $T/a $T/b
 
@@ -12,10 +15,8 @@ mkdir $T/a $T/b
 # Cleanup trap
 trap "cd /; fusermount -u -z $T/b; rm -Rf $T/a" EXIT
 
-# Write 10 x 100MB instead of 1 x 1GB to keep the used disk space low
-for i in $(seq 1 10); do
-	dd if=/dev/zero of=$T/b/zero bs=1M count=100
-done
+echo "Extracting..."
+time tar xzf /tmp/linux-3.0.tar.gz -C $T/b
 
 echo
 echo "Hint: go tool pprof ../gocryptfs $T/cprof"

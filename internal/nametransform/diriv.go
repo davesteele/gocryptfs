@@ -98,67 +98,65 @@ func WriteDirIV(dir string) error {
 	return nil
 }
 
+// encryptAndHashName encrypts "name" and hashes it to a longname if it is
+// too long.
+func (be *NameTransform) encryptAndHashName(name string, iv []byte) string {
+	cName := be.EncryptName(name, iv)
+	if be.longNames && len(cName) > syscall.NAME_MAX {
+		return be.HashLongName(cName)
+	}
+	return cName
+}
+
 // EncryptPathDirIV - encrypt relative plaintext path "plainPath" using EME with
 // DirIV. "rootDir" is the backing storage root directory.
 // Components that are longer than 255 bytes are hashed if be.longnames == true.
-func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (cipherPath string, err error) {
+func (be *NameTransform) EncryptPathDirIV(plainPath string, rootDir string) (string, error) {
+	var err error
 	// Empty string means root directory
 	if plainPath == "" {
 		return plainPath, nil
 	}
-	// Reject names longer than 255 bytes already here. This relieves everybody
-	// who uses hashed long names from checking for that later.
+	// Reject names longer than 255 bytes.
 	baseName := filepath.Base(plainPath)
 	if len(baseName) > syscall.NAME_MAX {
 		return "", syscall.ENAMETOOLONG
 	}
-	// Check if the DirIV is cached. This catches the case of the user iterating
-	// over files in a directory pretty well.
-	parentDir := filepath.Dir(plainPath)
-	iv, cParentDir := be.DirIVCache.lookup(parentDir)
-	if iv != nil {
-		cBaseName := be.EncryptName(baseName, iv)
-		if be.longNames && len(cBaseName) > syscall.NAME_MAX {
-			cBaseName = be.HashLongName(cBaseName)
-		}
-		cipherPath = filepath.Join(cParentDir, cBaseName)
-		return cipherPath, nil
+	// If we have the iv and the encrypted directory name in the cache, we
+	// can skip the directory walk. This optimization yields a 10% improvement
+	// in the tar extract benchmark.
+	parentDir := Dir(plainPath)
+	if iv, cParentDir := be.DirIVCache.Lookup(parentDir); iv != nil {
+		cBaseName := be.encryptAndHashName(baseName, iv)
+		return filepath.Join(cParentDir, cBaseName), nil
 	}
-	// We have to walk the directory tree, in the worst case starting at the root
-	// directory.
-	wd := rootDir
+	// We have to walk the directory tree, starting at the root directory.
+	// ciphertext working directory (relative path)
+	cipherWD := ""
+	// plaintext working directory (relative path)
+	plainWD := ""
 	plainNames := strings.Split(plainPath, "/")
-	// So the DirIV we need is not cached. But maybe one level higher is
-	// cached. Then we can skip a few items in the directory walk.
-	// The catches the case of walking directories recursively.
-	parentDir2 := filepath.Dir(parentDir)
-	iv, cParentDir = be.DirIVCache.lookup(parentDir2)
-	if iv != nil {
-		parentDirBase := filepath.Base(parentDir)
-		cBaseName := be.EncryptName(parentDirBase, iv)
-		if be.longNames && len(cBaseName) > syscall.NAME_MAX {
-			cBaseName = be.HashLongName(cBaseName)
-		}
-		wd = filepath.Join(wd, cParentDir, cBaseName)
-		cipherPath = filepath.Join(cParentDir, cBaseName)
-		skip := len(strings.Split(cipherPath, "/"))
-		plainNames = plainNames[skip:]
-	}
-	// Walk the directory tree starting at "wd"
 	for _, plainName := range plainNames {
-		iv, err = ReadDirIV(wd)
-		if err != nil {
-			return "", err
+		iv, _ := be.DirIVCache.Lookup(plainWD)
+		if iv == nil {
+			iv, err = ReadDirIV(filepath.Join(rootDir, cipherWD))
+			if err != nil {
+				return "", err
+			}
+			be.DirIVCache.Store(plainWD, iv, cipherWD)
 		}
-		encryptedName := be.EncryptName(plainName, iv)
-		if be.longNames && len(encryptedName) > syscall.NAME_MAX {
-			encryptedName = be.HashLongName(encryptedName)
-		}
-		cipherPath = filepath.Join(cipherPath, encryptedName)
-		wd = filepath.Join(wd, encryptedName)
+		cipherName := be.encryptAndHashName(plainName, iv)
+		cipherWD = filepath.Join(cipherWD, cipherName)
+		plainWD = filepath.Join(plainWD, plainName)
 	}
-	// Cache the final DirIV
-	cParentDir = filepath.Dir(cipherPath)
-	be.DirIVCache.store(parentDir, iv, cParentDir)
-	return cipherPath, nil
+	return cipherWD, nil
+}
+
+// Dir is like filepath.Dir but returns "" instead of ".".
+func Dir(path string) string {
+	d := filepath.Dir(path)
+	if d == "." {
+		return ""
+	}
+	return d
 }

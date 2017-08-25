@@ -11,15 +11,6 @@ import (
 	"github.com/rfjakob/gocryptfs/internal/tlog"
 )
 
-// saneDir is like filepath.Dir but returns "" instead of "."
-func saneDir(path string) string {
-	d := filepath.Dir(path)
-	if d == "." {
-		return ""
-	}
-	return d
-}
-
 // abs basically returns storage dir + "/" + relPath.
 // It takes an error parameter so it can directly wrap decryptPath like this:
 // a, err := rfs.abs(rfs.decryptPath(relPath))
@@ -46,7 +37,7 @@ func (rfs *ReverseFS) rDecryptName(cName string, dirIV []byte, pDir string) (pNa
 			// Stat attempts on the link target of encrypted symlinks.
 			// These are always valid base64 but the length is not a
 			// multiple of 16.
-			if err == syscall.EINVAL {
+			if err == syscall.EBADMSG {
 				return "", syscall.ENOENT
 			}
 			return "", err
@@ -71,7 +62,7 @@ func (rfs *ReverseFS) decryptPath(relPath string) (string, error) {
 		return relPath, nil
 	}
 	// Check if the parent dir is in the cache
-	cDir := saneDir(relPath)
+	cDir := nametransform.Dir(relPath)
 	dirIV, pDir := rPathCache.lookup(cDir)
 	if dirIV != nil {
 		cName := filepath.Base(relPath)
@@ -95,6 +86,6 @@ func (rfs *ReverseFS) decryptPath(relPath string) (string, error) {
 		transformedParts = append(transformedParts, transformedPart)
 	}
 	pRelPath := filepath.Join(transformedParts...)
-	rPathCache.store(cDir, dirIV, saneDir(pRelPath))
+	rPathCache.store(cDir, dirIV, nametransform.Dir(pRelPath))
 	return pRelPath, nil
 }

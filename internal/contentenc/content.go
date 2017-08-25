@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/hanwen/go-fuse/fuse"
+
 	"github.com/rfjakob/gocryptfs/internal/cryptocore"
 	"github.com/rfjakob/gocryptfs/internal/stupidgcm"
 	"github.com/rfjakob/gocryptfs/internal/tlog"
@@ -51,20 +53,38 @@ type ContentEnc struct {
 	allZeroNonce []byte
 	// Force decode even if integrity check fails (openSSL only)
 	forceDecode bool
+	// Ciphertext block pool. Always returns cipherBS-sized byte slices.
+	cBlockPool bPool
+	// Ciphertext request data pool. Always returns byte slices of size
+	// fuse.MAX_KERNEL_WRITE + overhead.
+	CReqPool bPool
+	// Plaintext block pool. Always returns plainBS-sized byte slices.
+	pBlockPool bPool
+	// Plaintext request data pool. Slice have size fuse.MAX_KERNEL_WRITE.
+	PReqPool bPool
 }
 
 // New returns an initialized ContentEnc instance.
 func New(cc *cryptocore.CryptoCore, plainBS uint64, forceDecode bool) *ContentEnc {
 	cipherBS := plainBS + uint64(cc.IVLen) + cryptocore.AuthTagLen
-
-	return &ContentEnc{
+	// Take IV and GHASH overhead into account.
+	cReqSize := int(fuse.MAX_KERNEL_WRITE / plainBS * cipherBS)
+	if fuse.MAX_KERNEL_WRITE%plainBS != 0 {
+		log.Panicf("unaligned MAX_KERNEL_WRITE=%d", fuse.MAX_KERNEL_WRITE)
+	}
+	c := &ContentEnc{
 		cryptoCore:   cc,
 		plainBS:      plainBS,
 		cipherBS:     cipherBS,
 		allZeroBlock: make([]byte, cipherBS),
 		allZeroNonce: make([]byte, cc.IVLen),
 		forceDecode:  forceDecode,
+		cBlockPool:   newBPool(int(cipherBS)),
+		CReqPool:     newBPool(cReqSize),
+		pBlockPool:   newBPool(int(plainBS)),
+		PReqPool:     newBPool(fuse.MAX_KERNEL_WRITE),
 	}
+	return c
 }
 
 // PlainBS returns the plaintext block size
@@ -81,7 +101,7 @@ func (be *ContentEnc) CipherBS() uint64 {
 func (be *ContentEnc) DecryptBlocks(ciphertext []byte, firstBlockNo uint64, fileID []byte) ([]byte, error) {
 	cBuf := bytes.NewBuffer(ciphertext)
 	var err error
-	var pBuf bytes.Buffer
+	pBuf := bytes.NewBuffer(be.PReqPool.Get()[:0])
 	for cBuf.Len() > 0 {
 		cBlock := cBuf.Next(int(be.cipherBS))
 		var pBlock []byte
@@ -94,6 +114,7 @@ func (be *ContentEnc) DecryptBlocks(ciphertext []byte, firstBlockNo uint64, file
 			}
 		}
 		pBuf.Write(pBlock)
+		be.pBlockPool.Put(pBlock)
 		firstBlockNo++
 	}
 	return pBuf.Bytes(), err
@@ -133,7 +154,8 @@ func (be *ContentEnc) DecryptBlock(ciphertext []byte, blockNo uint64, fileID []b
 	ciphertext = ciphertext[be.cryptoCore.IVLen:]
 
 	// Decrypt
-	var plaintext []byte
+	plaintext := be.pBlockPool.Get()
+	plaintext = plaintext[:0]
 	aData := make([]byte, 8)
 	aData = append(aData, fileID...)
 	binary.BigEndian.PutUint64(aData, blockNo)
@@ -185,12 +207,12 @@ func (be *ContentEnc) EncryptBlocks(plaintextBlocks [][]byte, firstBlockNo uint6
 		be.doEncryptBlocks(plaintextBlocks, ciphertextBlocks, firstBlockNo, fileID)
 	}
 	// Concatenate ciphertext into a single byte array.
-	// Size the output buffer for the maximum possible size (all blocks complete)
-	// to prevent further allocations in out.Write()
-	tmp := make([]byte, len(plaintextBlocks)*int(be.CipherBS()))
+	tmp := be.CReqPool.Get()
 	out := bytes.NewBuffer(tmp[:0])
 	for _, v := range ciphertextBlocks {
 		out.Write(v)
+		// Return the memory to cBlockPool
+		be.cBlockPool.Put(v)
 	}
 	return out.Bytes()
 }
@@ -233,21 +255,32 @@ func (be *ContentEnc) doEncryptBlock(plaintext []byte, blockNo uint64, fileID []
 	if len(nonce) != be.cryptoCore.IVLen {
 		log.Panic("wrong nonce length")
 	}
-
-	// Authenticate block with block number and file ID
+	// Block is authenticated with block number and file ID
 	aData := make([]byte, 8)
 	binary.BigEndian.PutUint64(aData, blockNo)
 	aData = append(aData, fileID...)
-
+	// Get a cipherBS-sized block of memory, copy the nonce into it and truncate to
+	// nonce length
+	cBlock := be.cBlockPool.Get()
+	copy(cBlock, nonce)
+	cBlock = cBlock[0:len(nonce)]
 	// Encrypt plaintext and append to nonce
-	ciphertext := be.cryptoCore.AEADCipher.Seal(nonce, nonce, plaintext, aData)
-
+	ciphertext := be.cryptoCore.AEADCipher.Seal(cBlock, nonce, plaintext, aData)
+	overhead := int(be.cipherBS - be.plainBS)
+	if len(plaintext)+overhead != len(ciphertext) {
+		log.Panicf("unexpected ciphertext length: plaintext=%d, overhead=%d, ciphertext=%d",
+			len(plaintext), overhead, len(ciphertext))
+	}
 	return ciphertext
 }
 
 // MergeBlocks - Merge newData into oldData at offset
 // New block may be bigger than both newData and oldData
 func (be *ContentEnc) MergeBlocks(oldData []byte, newData []byte, offset int) []byte {
+	// Fastpath for small-file creation
+	if len(oldData) == 0 && offset == 0 {
+		return newData
+	}
 
 	// Make block of maximum size
 	out := make([]byte, be.plainBS)
