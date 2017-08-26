@@ -1,0 +1,33 @@
+#!/bin/sh
+
+# Create a tar file containing the backing files for a gocryptfs
+# mount. The decrypted dir contains the file "testfile" containing
+# the string "It works!".
+#
+# The single argument is the name of the crypt directory, by
+# convention "gocryptfs-backing-<version>".
+
+TMPDIR=/tmp/decrypted
+NAME=$1
+mkdir -p $NAME
+
+gocryptfs --init --passfile goodpass $NAME
+
+rm -rf $TMPDIR
+mkdir -p $TMPDIR
+
+gocryptfs --passfile goodpass $NAME $TMPDIR
+
+echo "It works!" >$TMPDIR/testfile
+
+sync
+
+tar -czf $NAME.tgz $NAME
+
+fusermount -u $TMPDIR
+rm -rf $NAME
+
+
+
+
+

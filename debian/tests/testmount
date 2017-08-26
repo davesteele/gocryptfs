@@ -1,0 +1,68 @@
+#!/bin/sh
+
+VERSION=1.3
+WORKDIR=/tmp
+
+CDIR=gocryptfs-backing-$VERSION
+DDIR=/decrypted
+CPATH=$WORKDIR/$CDIR
+DPATH=$WORKDIR/$DDIR
+TESTFILEPATH=$DPATH/testfile
+TAR=`readlink -f debian/tests/$CDIR.tgz`
+PASSFILE=debian/tests/goodpass
+
+cleanup() {
+  if ! fusermount -u $DPATH ; then
+    echo "Error unmounting"
+    exit 1
+  fi
+  rm -rf $CPATH $DPATH
+}
+
+(cd $WORKDIR; tar -xaf $TAR)
+mkdir -p $DPATH
+
+if gocryptfs -q --passfile $PASSFILE $CPATH $DPATH ; then
+  echo "Mount successful"
+else
+  echo "Error mounting gocryptfs partition"
+  exit 1
+fi
+
+if grep -q "It works!" $TESTFILEPATH ; then
+  echo "Test file contents confirmed"
+else
+  echo "Test file not found"
+  cleanup
+  exit 1
+fi
+
+CHASH=`tar -c $CPATH 2>/dev/null | md5sum | awk '{print $1}'`
+CHASH3=`tar -c $CPATH 2>/dev/null | md5sum | awk '{print $1}'`
+if ! [ $CHASH = $CHASH3 ] ; then
+  echo "Internal error"
+  exit 1
+fi
+
+echo "Confirmed" >$CPATH/testfile2
+if grep -q Confirmed $CPATH/testfile2 ; then
+  echo "File creation test passed"
+else
+  echo "File creation test failed"
+  cleanup
+  exit 1
+fi
+
+CHASH2=`tar -c $CPATH 2>/dev/null | md5sum | awk '{print $1}'`
+
+if ! [ "$CHASH" = "$CHASH2" ] ; then
+  echo "Backing dir modification test passed"
+else
+  echo "Backing dir modification test failed"
+  cleanup
+  exit 1
+fi
+
+cleanup
+
+echo "Test completed successfully"
